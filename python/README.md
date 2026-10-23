@@ -14,3 +14,10 @@ with Controller.discover_one() as nx:       # or Controller.connect("192.168.1.5
 
 To develop without hardware, run `uv run nxc mock-device --port 7700` in one terminal and
 `uv run nxc --host 127.0.0.1 ping` in another.
+
+## Examples
+
+- `examples/typing_demo.py` shows off the keyboard: fast exact typing, human-like rhythm,
+  a typo fixed with backspace, Shift+arrow selection, symbols, a held modifier, and Tab/Enter.
+  Run `uv run python examples/typing_demo.py` and click into an empty text editor
+  during the countdown.
