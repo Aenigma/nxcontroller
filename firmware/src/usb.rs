@@ -9,6 +9,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use embassy_futures::join::join;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
+use embassy_time::{Duration, Timer, with_timeout};
 use embassy_usb::class::hid::{self, HidReaderWriter, HidSubclass, RequestHandler};
 use embassy_usb::{Builder, Handler, UsbDevice, UsbVersion};
 use esp_hal::usb::otg::embassy_usb_device::Driver;
@@ -98,6 +99,10 @@ impl KeyboardReport {
 static GAMEPAD_REPORTS: Channel<CriticalSectionRawMutex, GamepadReport, 32> = Channel::new();
 static KEYBOARD_REPORTS: Channel<CriticalSectionRawMutex, KeyboardReport, 64> = Channel::new();
 static CONFIGURED: AtomicBool = AtomicBool::new(false);
+
+/// How long the gamepad task waits for new input before resending the current state.
+/// The host's own polling (`poll_ms`) paces the actual writes.
+const REPEAT_MS: u64 = 4;
 
 /// True once the USB host (Switch/PC) has enumerated and configured us.
 pub fn is_configured() -> bool {
@@ -320,13 +325,22 @@ pub async fn usb_device_task(mut device: UsbDevice<'static, UsbDriver>) -> ! {
 pub async fn gamepad_task(hid: HidReaderWriter<'static, UsbDriver, 8, 8>) {
     let (reader, mut writer) = hid.split();
     let forward = async {
+        // Send the current state on every poll, not just on change: console
+        // drivers can treat a pad that goes quiet as idle or disconnected.
+        let mut current = GamepadReport::NEUTRAL;
         loop {
-            let report = GAMEPAD_REPORTS.receive().await;
-            if !is_configured() {
-                continue; // nothing plugged in; don't queue stale input
+            if let Ok(report) =
+                with_timeout(Duration::from_millis(REPEAT_MS), GAMEPAD_REPORTS.receive()).await
+            {
+                current = report;
             }
-            if let Err(e) = writer.write(&report.to_bytes()).await {
+            if !is_configured() {
+                current = GamepadReport::NEUTRAL; // nothing plugged in; drop stale input
+                continue;
+            }
+            if let Err(e) = writer.write(&current.to_bytes()).await {
                 warn!("gamepad write failed: {e:?}");
+                Timer::after(Duration::from_millis(100)).await;
             }
         }
     };
