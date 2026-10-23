@@ -18,18 +18,22 @@ pub mod msg {
     pub const SET_WIFI: u8 = 0x04;
     pub const GAMEPAD: u8 = 0x10;
     pub const KEYBOARD: u8 = 0x11;
+    pub const TYPE: u8 = 0x12;
     pub const RELEASE_ALL: u8 = 0x1F;
     // Device -> client
     pub const HELLO_ACK: u8 = 0x81;
     pub const PONG: u8 = 0x82;
     pub const MODE_ACK: u8 = 0x83;
     pub const WIFI_ACK: u8 = 0x84;
+    pub const TYPE_PROGRESS: u8 = 0x85;
     pub const ERROR: u8 = 0x8F;
 }
 
 pub mod feature {
     pub const GAMEPAD: u8 = 0x01;
     pub const KEYBOARD: u8 = 0x02;
+    /// The device paces TYPE keystrokes itself.
+    pub const PACED_TYPING: u8 = 0x80;
 }
 
 pub mod error {
@@ -39,14 +43,31 @@ pub mod error {
     pub const VERSION_MISMATCH: u8 = 4;
     pub const INVALID_VALUE: u8 = 5;
     pub const STORAGE: u8 = 6;
+    pub const BUSY: u8 = 7;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command<'a> {
-    Hello { version: u8 },
-    Ping { seq: u32 },
-    SetMode { mode: u8 },
-    SetWifi { ssid: &'a str, password: &'a str },
+    Hello {
+        version: u8,
+    },
+    Ping {
+        seq: u32,
+    },
+    SetMode {
+        mode: u8,
+    },
+    SetWifi {
+        ssid: &'a str,
+        password: &'a str,
+    },
+    /// Keystrokes for the device to type at its own pace: `keys` holds
+    /// `(modifiers, key)` pairs.
+    Type {
+        press_ms: u8,
+        release_ms: u8,
+        keys: &'a [u8],
+    },
     Gamepad(GamepadReport),
     Keyboard(KeyboardReport),
     ReleaseAll,
@@ -107,6 +128,17 @@ pub fn parse(msg_type: u8, payload: &[u8]) -> Result<Command<'_>, u8> {
                 modifiers: payload[0],
                 keys,
             }))
+        }
+        msg::TYPE => {
+            // press_ms | release_ms | (modifiers, key) pairs
+            if payload.len() < 2 || !payload.len().is_multiple_of(2) {
+                return Err(error::BAD_LENGTH);
+            }
+            Ok(Command::Type {
+                press_ms: payload[0],
+                release_ms: payload[1],
+                keys: &payload[2..],
+            })
         }
         msg::RELEASE_ALL => {
             expect(0)?;

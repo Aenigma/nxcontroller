@@ -5,11 +5,12 @@
 //! Network tasks push reports into the channels below; the USB tasks forward
 //! them to the host in order, so short taps are never coalesced away.
 
-use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 
 use embassy_futures::join::join;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
+use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Timer, with_timeout};
 use embassy_usb::class::hid::HidSubclass;
 use embassy_usb::class::hid::{
@@ -105,7 +106,25 @@ impl KeyboardReport {
 }
 
 static GAMEPAD_REPORTS: Channel<CriticalSectionRawMutex, GamepadReport, 32> = Channel::new();
-static KEYBOARD_REPORTS: Channel<CriticalSectionRawMutex, KeyboardReport, 64> = Channel::new();
+/// Everything the keyboard does, in order: raw states from KEYBOARD messages and
+/// keystrokes from TYPE messages share one queue.
+#[derive(Debug, Clone, Copy)]
+enum KeyCmd {
+    State(KeyboardReport),
+    Tap {
+        modifiers: u8,
+        key: u8,
+        press_ms: u8,
+        release_ms: u8,
+    },
+}
+
+/// Room for well over the client's typing window (see TYPE in PROTOCOL.md).
+const KEYBOARD_QUEUE: usize = 512;
+static KEYBOARD_CMDS: Channel<CriticalSectionRawMutex, KeyCmd, KEYBOARD_QUEUE> = Channel::new();
+/// Keystrokes finished since the control server last reported progress.
+static TYPED: AtomicU32 = AtomicU32::new(0);
+static TYPED_SIGNAL: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 static CONFIGURED: AtomicBool = AtomicBool::new(false);
 
 /// How long the gamepad task waits for new input before resending the current state.
@@ -124,7 +143,7 @@ pub fn submit_gamepad(report: GamepadReport) {
 }
 
 pub fn submit_keyboard(report: KeyboardReport) {
-    if KEYBOARD_REPORTS.try_send(report).is_err() {
+    if KEYBOARD_CMDS.try_send(KeyCmd::State(report)).is_err() {
         warn!("keyboard queue full, dropping report");
     }
 }
@@ -136,9 +155,41 @@ pub fn release_all() {
         submit_gamepad(GamepadReport::NEUTRAL);
     }
     if mode().has_keyboard() {
-        KEYBOARD_REPORTS.clear();
+        KEYBOARD_CMDS.clear();
+        TYPED.store(0, Ordering::Relaxed);
+        TYPED_SIGNAL.reset();
         submit_keyboard(KeyboardReport::EMPTY);
     }
+}
+
+/// Queue keystrokes (`(modifiers, key)` pairs) for the keyboard task to type at
+/// the pace the host reads them. All or nothing: returns false, queueing none,
+/// if they don't fit.
+pub fn queue_taps(press_ms: u8, release_ms: u8, keys: &[u8]) -> bool {
+    // The control server is the only producer, so the space can't shrink under us.
+    if KEYBOARD_CMDS.free_capacity() < keys.len() / 2 {
+        return false;
+    }
+    for pair in keys.chunks_exact(2) {
+        let _ = KEYBOARD_CMDS.try_send(KeyCmd::Tap {
+            modifiers: pair[0],
+            key: pair[1],
+            press_ms,
+            release_ms,
+        });
+    }
+    true
+}
+
+/// Wait until keystrokes have been typed, then return how many since last time.
+pub async fn typed() -> u32 {
+    TYPED_SIGNAL.wait().await;
+    TYPED.swap(0, Ordering::Relaxed)
+}
+
+fn mark_typed() {
+    TYPED.fetch_add(1, Ordering::Relaxed);
+    TYPED_SIGNAL.signal(());
 }
 
 #[rustfmt::skip]
@@ -407,13 +458,73 @@ pub async fn gamepad_task(hid: HidReaderWriter<'static, UsbDriver, 8, 8>) {
 
 #[embassy_executor::task]
 pub async fn keyboard_task(mut writer: HidWriter<'static, UsbDriver, 8>) {
+    const NO_KEYS: [u8; 6] = [0; 6];
+    // What the host currently sees.
+    let mut current = KeyboardReport::EMPTY;
     loop {
-        let report = KEYBOARD_REPORTS.receive().await;
+        let cmd = KEYBOARD_CMDS.receive().await;
         if !is_configured() {
+            // Nothing plugged in: drop it, but still count keystrokes so the
+            // client's flow control doesn't stall.
+            if let KeyCmd::Tap { .. } = cmd {
+                mark_typed();
+            }
+            current = KeyboardReport::EMPTY;
             continue;
         }
-        if let Err(e) = writer.write(&report.to_bytes()).await {
-            warn!("keyboard write failed: {e:?}");
+        match cmd {
+            KeyCmd::State(report) => send_keyboard(&mut writer, &mut current, report).await,
+            KeyCmd::Tap {
+                modifiers,
+                key,
+                press_ms,
+                release_ms,
+            } => {
+                // Each write completes only once the host has taken the report,
+                // so every state below is seen by the host. Nothing is skipped
+                // however fast the queue fills.
+                let idle = KeyboardReport {
+                    modifiers,
+                    keys: NO_KEYS,
+                };
+                // Change modifiers on their own first, so the host applies Shift
+                // before the key arrives.
+                if current != idle {
+                    send_keyboard(&mut writer, &mut current, idle).await;
+                }
+                let mut down = idle;
+                down.keys[0] = key;
+                send_keyboard(&mut writer, &mut current, down).await;
+                hold(press_ms).await;
+                // Always release, so a repeated key ("ll") registers twice.
+                send_keyboard(&mut writer, &mut current, idle).await;
+                hold(release_ms).await;
+                mark_typed();
+                // Let go of the modifiers once there's nothing more to type. While
+                // more is queued, keep them in case the next key needs them.
+                if KEYBOARD_CMDS.is_empty() && current.modifiers != 0 {
+                    send_keyboard(&mut writer, &mut current, KeyboardReport::EMPTY).await;
+                }
+            }
         }
+    }
+}
+
+async fn send_keyboard(
+    writer: &mut HidWriter<'static, UsbDriver, 8>,
+    current: &mut KeyboardReport,
+    report: KeyboardReport,
+) {
+    if let Err(e) = writer.write(&report.to_bytes()).await {
+        warn!("keyboard write failed: {e:?}");
+    }
+    *current = report;
+}
+
+/// Keep the current key state for at least `ms` (on top of the host read that
+/// already happened), for apps that only check the keyboard once per frame.
+async fn hold(ms: u8) {
+    if ms > 0 {
+        Timer::after(Duration::from_millis(u64::from(ms))).await;
     }
 }

@@ -1,6 +1,7 @@
 //! WiFi (station, with the setup hotspot as fallback), TCP control server and
 //! UDP discovery responder.
 
+use embassy_futures::select::{Either, select};
 use embassy_net::tcp::TcpSocket;
 use embassy_net::udp::{PacketMetadata, UdpSocket};
 use embassy_net::{Runner, Stack};
@@ -12,7 +13,7 @@ use esp_radio::wifi::{Config as WifiConfig, Interface, WifiController};
 use log::{info, warn};
 
 use crate::config::{DEVICE_NAME, SETUP_SSID};
-use crate::protocol::{self, Command, error, msg};
+use crate::protocol::{self, Command, error, feature, msg};
 use crate::settings::Mode;
 use crate::{SharedSettings, restart, setup, usb};
 
@@ -133,7 +134,25 @@ async fn serve(socket: &mut TcpSocket<'_>, settings: SharedSettings) -> bool {
     let mut out = [0u8; 64];
 
     loop {
-        if socket.read_exact(&mut header).await.is_err() {
+        // Wait for the next message, reporting typing progress in the meantime:
+        // the client holds back further TYPE messages until it hears about it.
+        // (TcpSocket::read is cancel-safe, so losing the race drops no data.)
+        match select(socket.read(&mut header[..1]), usb::typed()).await {
+            Either::First(Ok(n)) if n > 0 => {}
+            Either::First(_) => return false,
+            Either::Second(count) => {
+                if count == 0 {
+                    continue;
+                }
+                let count = count.min(u32::from(u16::MAX)) as u16;
+                let reply = protocol::frame(&mut out, msg::TYPE_PROGRESS, &count.to_le_bytes());
+                if socket.write_all(reply).await.is_err() || socket.flush().await.is_err() {
+                    return false;
+                }
+                continue;
+            }
+        }
+        if socket.read_exact(&mut header[1..]).await.is_err() {
             return false;
         }
         let len = header[1] as usize;
@@ -145,7 +164,8 @@ async fn serve(socket: &mut TcpSocket<'_>, settings: SharedSettings) -> bool {
         let reply = match protocol::parse(header[0], &payload[..len]) {
             Ok(Command::Hello { version }) if version == protocol::PROTOCOL_VERSION => {
                 let mut body = [0u8; 34];
-                let features = usb::mode() as u8; // mode values are the feature bits
+                // Mode values are the gamepad/keyboard feature bits.
+                let features = usb::mode() as u8 | feature::PACED_TYPING;
                 let name = &DEVICE_NAME.as_bytes()[..DEVICE_NAME.len().min(32)];
                 body[0] = protocol::PROTOCOL_VERSION;
                 body[1] = features;
@@ -213,7 +233,19 @@ async fn serve(socket: &mut TcpSocket<'_>, settings: SharedSettings) -> bool {
                 usb::submit_keyboard(report);
                 None
             }
-            Ok(Command::Gamepad(_)) | Ok(Command::Keyboard(_)) => {
+            Ok(Command::Type {
+                press_ms,
+                release_ms,
+                keys,
+            }) if usb::mode().has_keyboard() => {
+                if usb::queue_taps(press_ms, release_ms, keys) {
+                    None
+                } else {
+                    warn!("keystroke queue full, rejecting {} keys", keys.len() / 2);
+                    Some(protocol::frame(&mut out, msg::ERROR, &[error::BUSY]))
+                }
+            }
+            Ok(Command::Gamepad(_)) | Ok(Command::Keyboard(_)) | Ok(Command::Type { .. }) => {
                 Some(protocol::frame(&mut out, msg::ERROR, &[error::UNSUPPORTED]))
             }
             Ok(Command::ReleaseAll) => {

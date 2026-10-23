@@ -6,7 +6,7 @@ import queue
 import socket
 import threading
 import time
-from typing import Iterable
+from typing import Callable, Iterable
 
 from . import protocol as p
 from .inputs import (
@@ -26,6 +26,12 @@ KeyLike = Key | str
 
 DEFAULT_TAP = 0.1  # seconds held for a tap
 DEFAULT_GAP = 0.05  # seconds released after a tap
+
+# Keystrokes the client lets the device buffer at once. The device's queue holds
+# 512, so this leaves room for KEYBOARD state messages sent meanwhile.
+TYPE_WINDOW = 256
+# Give up if the device reports no typing progress for this long.
+TYPE_STALL_TIMEOUT = 5.0
 
 
 class NXError(Exception):
@@ -54,6 +60,8 @@ class Controller:
         self._send_lock = threading.Lock()
         self._waiting = False
         self._seq = 0
+        self._typed = 0  # keystrokes the device reports finished (TYPE_PROGRESS)
+        self._typed_cond = threading.Condition()
         self._reset_state()
         self._attach(sock)
 
@@ -204,11 +212,72 @@ class Controller:
         self.key_up(*keys, modifiers=modifiers)
         time.sleep(gap)
 
-    def type_text(self, text: str, interval: float = 0.03) -> None:
-        """Type a string using a US keyboard layout."""
-        for ch in text:
-            mods, key = char_to_key(ch)
-            self.key_tap(key, modifiers=mods, duration=interval, gap=interval)
+    def type_text(
+        self,
+        text: str,
+        interval: float = 0.0,
+        on_progress: Callable[[int, int], None] | None = None,
+    ) -> None:
+        """Type a string using a US keyboard layout. Returns once it's all typed.
+
+        The board paces the keystrokes itself: it changes the key state only after
+        the USB host has read the previous one, and the client never sends more
+        than the board can buffer. So no keystroke is dropped, however fast this
+        runs. `interval` adds a minimum time (seconds, up to 0.255) that each key
+        stays pressed and released, for apps that only check the keyboard once
+        per frame. 0 means as fast as the host reads reports.
+
+        `on_progress(done, total)` is called as keystrokes complete.
+        """
+        keys = [(int(m), int(k)) for m, k in map(char_to_key, text)]
+        if not keys:
+            return
+        if not self.info.has_keyboard:
+            raise NXError(f"keyboard is not active (device is in {self.mode!r} mode; see set_mode)")
+        if not self.info.has_paced_typing:
+            self._type_unpaced(keys, interval, on_progress)
+            return
+
+        hold_ms = max(0, min(255, round(interval * 1000)))
+        total = len(keys)
+        sent = 0
+        with self._typed_cond:
+            self._typed = 0
+        last_done, last_change = 0, time.monotonic()
+        while True:
+            with self._typed_cond:
+                done = self._typed
+                room = TYPE_WINDOW - (sent - done)
+                if done < total and (sent == total or room <= 0):
+                    self._typed_cond.wait(timeout=0.25)
+                    done = self._typed
+                    room = TYPE_WINDOW - (sent - done)
+            self._check_async_error()
+            if done != last_done:
+                last_done, last_change = done, time.monotonic()
+                if on_progress:
+                    on_progress(min(done, total), total)
+            if done >= total:
+                return
+            if sent < total and room > 0:
+                n = min(room, p.MAX_TYPE_KEYS, total - sent)
+                self._send(p.encode_type(hold_ms, hold_ms, keys[sent : sent + n]))
+                sent += n
+            elif time.monotonic() - last_change > TYPE_STALL_TIMEOUT:
+                raise NXError(f"typing stalled after {done}/{total} keystrokes")
+
+    def _type_unpaced(
+        self,
+        keys: list[tuple[int, int]],
+        interval: float,
+        on_progress: Callable[[int, int], None] | None,
+    ) -> None:
+        """Fallback for firmware without paced typing: time the keystrokes from here."""
+        step = max(interval, 0.03)
+        for i, (mods, key) in enumerate(keys, 1):
+            self.key_tap(Key(key), modifiers=Modifier(mods), duration=step, gap=step)
+            if on_progress:
+                on_progress(i, len(keys))
 
     # -------------------------------------------------------------- misc
 
@@ -258,7 +327,7 @@ class Controller:
             sock = self._try_reconnect(name)
             if sock is not None:
                 self._attach(sock)
-                if self.info.features != code:
+                if self.info.features & p.MODE_MASK != code:
                     raise NXError(f"device came back in {self.mode!r} mode, expected {mode!r}")
                 return
             if time.monotonic() > deadline:
@@ -305,12 +374,15 @@ class Controller:
             raise NXError(f"keyboard is not active (device is in {self.mode!r} mode; see set_mode)")
         self._send(p.encode_keyboard(int(self._modifiers), self._keys))
 
-    def _send(self, data: bytes) -> None:
-        if self._closed:
-            raise NXError("controller is closed")
+    def _check_async_error(self) -> None:
         if self._async_error is not None:
             err, self._async_error = self._async_error, None
             raise NXError(f"device error: {err.description}")
+
+    def _send(self, data: bytes) -> None:
+        if self._closed:
+            raise NXError("controller is closed")
+        self._check_async_error()
         with self._send_lock:
             self._sock.sendall(data)
 
@@ -346,8 +418,14 @@ class Controller:
                     msg = p.decode(msg_type, payload)
                 except ValueError:
                     continue
-                if isinstance(msg, p.DeviceError) and not self._waiting:
-                    # Errors for fire-and-forget state messages surface on the next call.
+                if isinstance(msg, p.TypeProgress):
+                    with self._typed_cond:
+                        self._typed += msg.count
+                        self._typed_cond.notify_all()
+                elif isinstance(msg, p.DeviceError) and not self._waiting:
+                    # Errors for fire-and-forget messages surface on the next call.
                     self._async_error = msg
+                    with self._typed_cond:
+                        self._typed_cond.notify_all()
                 else:
                     replies.put(msg)

@@ -135,3 +135,56 @@ def test_set_wifi_validates(device):
             nx.set_wifi("", "whatever1")
         with pytest.raises(ValueError):
             nx.set_wifi("net", "short")
+
+
+def _decode_typed(keys):
+    rev = {}
+    for ch in map(chr, range(32, 127)):
+        m, k = char_to_key(ch)
+        rev[(int(m), int(k))] = ch
+    for ch in "\n\t":
+        m, k = char_to_key(ch)
+        rev[(int(m), int(k))] = ch
+    return "".join(rev[mk] for mk in keys)
+
+
+SAMPLE = "Hello, World! The quick brown fox jumps over the lazy dog. 0123456789 ~!@#$%^&*()_+{}|:\"<>?\n\tdone"
+
+
+def test_type_text_paced(device):
+    with Controller.connect(device.host, device.port) as nx:
+        assert nx.info.has_paced_typing
+        nx.type_text(SAMPLE, interval=0.004)
+    assert _decode_typed(device.state.typed) == SAMPLE
+    type_msgs = [pl for t, pl in device.state.log if t == p.MSG_TYPE]
+    assert all(pl[:2] == bytes((4, 4)) for pl in type_msgs)
+    # Paced typing never falls back to per-key KEYBOARD messages.
+    assert not [t for t, _ in device.state.log if t == p.MSG_KEYBOARD]
+
+
+def test_type_text_flow_control_with_slow_device():
+    dev = MockDevice(key_time=0.0003).start()  # device types slower than we can send
+    text = (SAMPLE * 12)[:1000]
+    progress = []
+    try:
+        with Controller.connect(dev.host, dev.port) as nx:
+            nx.type_text(text, on_progress=lambda done, total: progress.append((done, total)))
+    finally:
+        dev.stop()
+    assert _decode_typed(dev.state.typed) == text
+    assert 0 < dev.state.max_outstanding <= 256  # never more than the window in flight
+    assert progress[-1] == (1000, 1000)
+    assert [d for d, _ in progress] == sorted(d for d, _ in progress)
+
+
+def test_type_text_falls_back_on_old_firmware():
+    dev = MockDevice(paced=False).start()
+    try:
+        with Controller.connect(dev.host, dev.port) as nx:
+            assert not nx.info.has_paced_typing
+            nx.type_text("hi", interval=0.0)
+    finally:
+        dev.stop()
+    assert dev.state.typed == []
+    kb = [pl for t, pl in dev.state.log if t == p.MSG_KEYBOARD]
+    assert [pl[1] for pl in kb][:4] == [int(Key.H), 0, int(Key.I), 0]

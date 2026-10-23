@@ -19,6 +19,7 @@ MSG_SET_MODE = 0x03
 MSG_SET_WIFI = 0x04
 MSG_GAMEPAD = 0x10
 MSG_KEYBOARD = 0x11
+MSG_TYPE = 0x12
 MSG_RELEASE_ALL = 0x1F
 
 # Device -> client
@@ -26,10 +27,16 @@ MSG_HELLO_ACK = 0x81
 MSG_PONG = 0x82
 MSG_MODE_ACK = 0x83
 MSG_WIFI_ACK = 0x84
+MSG_TYPE_PROGRESS = 0x85
 MSG_ERROR = 0x8F
 
 FEATURE_GAMEPAD = 0x01
 FEATURE_KEYBOARD = 0x02
+FEATURE_PACED_TYPING = 0x80  # device paces TYPE keystrokes itself
+MODE_MASK = FEATURE_GAMEPAD | FEATURE_KEYBOARD
+
+# Keystrokes per TYPE message: (255 - 2) // 2.
+MAX_TYPE_KEYS = 126
 
 # USB modes. The values are the feature bits the device ends up with.
 MODES = {"gamepad": 0x01, "keyboard": 0x02, "both": 0x03}
@@ -42,6 +49,7 @@ ERROR_NAMES = {
     4: "protocol version mismatch",
     5: "invalid value",
     6: "failed to save setting on the device",
+    7: "device keystroke buffer full",
 }
 
 
@@ -83,6 +91,16 @@ def encode_keyboard(modifiers: int, keys: list[int] | tuple[int, ...]) -> bytes:
     return frame(MSG_KEYBOARD, bytes([modifiers, *padded]))
 
 
+def encode_type(press_ms: int, release_ms: int, keys: list[tuple[int, int]]) -> bytes:
+    """Keystrokes as (modifiers, key) pairs for the device to type at its own pace."""
+    if len(keys) > MAX_TYPE_KEYS:
+        raise ValueError(f"at most {MAX_TYPE_KEYS} keys per TYPE message")
+    body = bytearray((press_ms, release_ms))
+    for modifiers, key in keys:
+        body += bytes((modifiers, key))
+    return frame(MSG_TYPE, bytes(body))
+
+
 def encode_release_all() -> bytes:
     return frame(MSG_RELEASE_ALL)
 
@@ -103,7 +121,12 @@ class HelloAck:
 
     @property
     def mode(self) -> str:
-        return MODE_NAMES.get(self.features, f"unknown ({self.features})")
+        mode = self.features & MODE_MASK
+        return MODE_NAMES.get(mode, f"unknown ({mode})")
+
+    @property
+    def has_paced_typing(self) -> bool:
+        return bool(self.features & FEATURE_PACED_TYPING)
 
 
 @dataclass(frozen=True)
@@ -124,6 +147,11 @@ class WifiAck:
 
 
 @dataclass(frozen=True)
+class TypeProgress:
+    count: int  # keystrokes finished since the previous TYPE_PROGRESS
+
+
+@dataclass(frozen=True)
 class DeviceError:
     code: int
 
@@ -132,7 +160,7 @@ class DeviceError:
         return ERROR_NAMES.get(self.code, f"error {self.code}")
 
 
-Message = HelloAck | Pong | ModeAck | WifiAck | DeviceError
+Message = HelloAck | Pong | ModeAck | WifiAck | TypeProgress | DeviceError
 
 
 def decode(msg_type: int, payload: bytes) -> Message:
@@ -145,6 +173,8 @@ def decode(msg_type: int, payload: bytes) -> Message:
         return ModeAck(payload[0], bool(payload[1]))
     if msg_type == MSG_WIFI_ACK and not payload:
         return WifiAck()
+    if msg_type == MSG_TYPE_PROGRESS and len(payload) == 2:
+        return TypeProgress(struct.unpack("<H", payload)[0])
     if msg_type == MSG_ERROR and len(payload) == 1:
         return DeviceError(payload[0])
     raise ValueError(f"unexpected message 0x{msg_type:02x} ({len(payload)} bytes)")

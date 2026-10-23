@@ -41,6 +41,7 @@ Every message, in both directions, has the same shape:
 | `0x04` | SET_WIFI     | `ssid_len: u8, ssid: utf8[ssid_len], password: utf8[..]` |
 | `0x10` | GAMEPAD      | `buttons: u16, hat: u8, lx: u8, ly: u8, rx: u8, ry: u8`  |
 | `0x11` | KEYBOARD     | `modifiers: u8, keys: [u8; 6]`                           |
+| `0x12` | TYPE         | `press_ms: u8, release_ms: u8, (modifiers: u8, key: u8)[..126]` |
 | `0x1F` | RELEASE_ALL  | *(empty)*                                                |
 
 `GAMEPAD` and `KEYBOARD` carry the **complete** state, not deltas. The device
@@ -58,9 +59,10 @@ check that the link is up.
 | `0x82` | PONG       | `seq: u32, usb_configured: u8`                                |
 | `0x83` | MODE_ACK   | `mode: u8, restarting: u8`                                    |
 | `0x84` | WIFI_ACK   | *(empty)*                                                     |
+| `0x85` | TYPE_PROGRESS | `count: u16` (keystrokes finished since the last one)      |
 | `0x8F` | ERROR      | `code: u8`                                                    |
 
-`features` bit flags: `0x01` gamepad, `0x02` keyboard. These reflect the
+`features` bit flags: `0x01` gamepad, `0x02` keyboard, `0x80` paced typing (TYPE). These reflect the
 current USB mode, and mode values use the same bits.
 
 `usb_configured` is `1` once the USB host (Switch or PC) has enumerated the device.
@@ -68,7 +70,30 @@ current USB mode, and mode values use the same bits.
 Error codes: `1` unknown message type, `2` bad payload length,
 `3` not available in the current USB mode (for example a keyboard message in
 gamepad mode), `4` protocol version mismatch, `5` invalid value,
-`6` failed to save a setting.
+`6` failed to save a setting, `7` keystroke buffer full (TYPE rejected,
+nothing queued).
+
+## Paced typing (TYPE)
+
+Firmware that sets feature bit `0x80` in HELLO_ACK types `TYPE` keystrokes at
+the pace the USB host reads them, instead of the client timing KEYBOARD states
+over the network. For each `(modifiers, key)` it:
+
+1. changes the modifiers on their own first, if they differ from the current state;
+2. presses the key, then holds for at least `press_ms`;
+3. releases the key (so repeated keys register twice), then holds for at least `release_ms`;
+4. releases the modifiers once the queue is empty.
+
+Every report write completes only after the host has taken the report, so no
+state is skipped however fast keystrokes are queued. `press_ms`/`release_ms`
+(0 = none) add time for apps that only sample the keyboard once per frame.
+
+Flow control: the device buffers up to 512 keyboard commands (TYPE keystrokes
+and KEYBOARD states share one ordered queue). It reports finished keystrokes
+with `TYPE_PROGRESS`, sent while the client is idle, and coalesced. Clients
+should keep at most 256 keystrokes outstanding (sent minus reported). A TYPE that
+doesn't fit is rejected whole with error `7`. RELEASE_ALL and disconnecting clear the
+queue, so typing stops within about one keystroke.
 
 ## USB mode
 

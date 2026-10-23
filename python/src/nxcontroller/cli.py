@@ -37,6 +37,7 @@ def main(argv: list[str] | None = None) -> int:
     dpad.add_argument("direction")
     type_ = sub.add_parser("type", help="type text on the USB keyboard")
     type_.add_argument("text")
+    type_.add_argument("--interval", type=float, default=0.0, help="minimum seconds per key state (default: as fast as possible)")
     key = sub.add_parser("key", help="tap a key, e.g. `nxc key enter`")
     key.add_argument("keys", nargs="+")
     mock = sub.add_parser("mock-device", help="run a fake device on localhost for testing")
@@ -100,7 +101,7 @@ def main(argv: list[str] | None = None) -> int:
             elif args.cmd == "dpad":
                 nx.dpad_tap(args.direction)
             elif args.cmd == "type":
-                nx.type_text(args.text)
+                nx.type_text(args.text, interval=args.interval)
             elif args.cmd == "key":
                 nx.key_tap(*args.keys)
     except (NXError, OSError, ValueError) as e:

@@ -81,7 +81,7 @@ with Controller.discover_one() as nx:      # or Controller.connect("192.168.1.50
     nx.set_gamepad(buttons=["B"], left=(1, 0))
     nx.release_all()
 
-    nx.type_text("Hello, world!\n")        # USB keyboard, US layout
+    nx.type_text("Hello, world!\n")        # USB keyboard, US layout; paced by the board
     nx.key_tap("a", modifiers=Modifier.LCTRL)
     print(nx.ping())                       # (latency_s, usb_configured)
 ```

@@ -59,7 +59,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("file", nargs="?", default="-", help="text file to type (default: stdin)")
     parser.add_argument("--host", help="device IP (default: auto-discover)")
-    parser.add_argument("--interval", type=float, default=0.01, help="seconds per key press and per release")
+    parser.add_argument("--interval", type=float, default=0.0,
+                        help="minimum seconds each key stays pressed and released (max 0.255). "
+                             "0 = as fast as the USB host reads; raise it if an app drops keys")
     parser.add_argument("--countdown", type=int, default=5, help="seconds to focus the target window")
     parser.add_argument("--on-unknown", choices=["skip", "fail"], default="skip",
                         help="what to do with characters a US keyboard can't type")
@@ -77,8 +79,7 @@ def main() -> None:
     if not text:
         raise SystemExit("nothing to type")
 
-    seconds = len(text) * args.interval * 2
-    print(f"{len(text)} characters, about {seconds:.0f}s to type", file=sys.stderr)
+    print(f"{len(text)} characters", file=sys.stderr)
 
     try:
         nx = Controller.connect(args.host) if args.host else Controller.discover_one()
@@ -86,26 +87,31 @@ def main() -> None:
         raise SystemExit(f"could not connect to the board: {e}") from None
     with nx:
         if not nx.info.has_keyboard:
-            raise SystemExit("this firmware build has no keyboard (flash without --gamepad-only)")
+            raise SystemExit(f"the keyboard isn't active (board is in {nx.mode!r} mode; try `nxc mode keyboard`)")
+        if not nx.info.has_paced_typing:
+            print("note: old firmware, typing is timed from here (slower; reflash for paced typing)",
+                  file=sys.stderr)
 
         for i in range(args.countdown, 0, -1):
             print(f"focus the target window... {i} ", end="\r", file=sys.stderr, flush=True)
             time.sleep(1)
 
         start = time.monotonic()
-        n = 0
-        try:
-            for n, ch in enumerate(text, 1):
-                mods, key = char_to_key(ch)
-                nx.key_tap(key, modifiers=mods, duration=args.interval, gap=args.interval)
-                if n % 50 == 0 or n == len(text):
-                    print(f"typed {n}/{len(text)} ({n * 100 // len(text)}%)   ",
-                          end="\r", file=sys.stderr, flush=True)
-        except KeyboardInterrupt:
-            print(f"\nstopped after {n} characters", file=sys.stderr)
-            raise SystemExit(130) from None
-        print(f"\ndone in {time.monotonic() - start:.1f}s", file=sys.stderr)
+        done = 0
 
+        def progress(n: int, total: int) -> None:
+            nonlocal done
+            done = n
+            print(f"typed {n}/{total} ({n * 100 // total}%)   ", end="\r", file=sys.stderr, flush=True)
+
+        try:
+            nx.type_text(text, interval=args.interval, on_progress=progress)
+        except KeyboardInterrupt:
+            # Leaving the `with` block releases everything and clears the board's queue.
+            print(f"\nstopped after {done} characters", file=sys.stderr)
+            raise SystemExit(130) from None
+        elapsed = time.monotonic() - start
+        print(f"\ndone in {elapsed:.1f}s ({len(text) / elapsed:.0f} chars/s)", file=sys.stderr)
 
 if __name__ == "__main__":
     main()

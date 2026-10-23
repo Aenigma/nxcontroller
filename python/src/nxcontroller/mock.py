@@ -5,10 +5,12 @@ Run it with `nxc mock-device`, then point the client at 127.0.0.1.
 
 from __future__ import annotations
 
+import queue
 import socket
 import socketserver
 import struct
 import threading
+import time
 from dataclasses import dataclass, field
 
 from . import protocol as p
@@ -22,6 +24,8 @@ class MockState:
     modifiers: int = 0
     keys: tuple[int, ...] = (0,) * 6
     log: list[tuple[int, bytes]] = field(default_factory=list)
+    typed: list[tuple[int, int]] = field(default_factory=list)  # (modifiers, key) from TYPE
+    max_outstanding: int = 0  # most keystrokes ever buffered at once
 
 
 class MockDevice:
@@ -32,12 +36,21 @@ class MockDevice:
         gamepad: bool = True,
         keyboard: bool = True,
         verbose: bool = False,
+        paced: bool = True,
+        key_time: float = 0.0,
     ):
+        """`paced`: advertise and handle TYPE. `key_time`: simulated seconds per
+        keystroke before TYPE_PROGRESS is sent, to exercise client flow control."""
         self.state = MockState()
         self.gamepad = gamepad
         self.keyboard = keyboard
         self.verbose = verbose
+        self.paced = paced
+        self.key_time = key_time
         self._restart = False
+        self._outstanding = 0
+        self._send_lock = threading.Lock()
+        self._typing: queue.Queue[int | None] = queue.Queue()
         self.wifi: tuple[str, str] | None = None
         device = self
 
@@ -62,6 +75,26 @@ class MockDevice:
         self._server.serve_forever()
 
     def _serve(self, conn: socket.socket) -> None:
+        self._typing = queue.Queue()
+        self._outstanding = 0
+        threading.Thread(target=self._type_worker, args=(conn, self._typing), daemon=True).start()
+        try:
+            self._serve_frames(conn)
+        finally:
+            self._typing.put(None)
+
+    def _type_worker(self, conn: socket.socket, work: queue.Queue[int | None]) -> None:
+        """Pretend to type queued keystrokes, then report them like the firmware."""
+        while (n := work.get()) is not None:
+            time.sleep(self.key_time * n)
+            self._outstanding = max(0, self._outstanding - n)
+            try:
+                with self._send_lock:
+                    conn.sendall(p.frame(p.MSG_TYPE_PROGRESS, n.to_bytes(2, "little")))
+            except OSError:
+                return
+
+    def _serve_frames(self, conn: socket.socket) -> None:
         buf = b""
         while True:
             chunk = conn.recv(256)
@@ -73,7 +106,8 @@ class MockDevice:
                 payload, buf = buf[2 : 2 + length], buf[2 + length :]
                 reply = self._handle(msg_type, payload)
                 if reply:
-                    conn.sendall(reply)
+                    with self._send_lock:
+                        conn.sendall(reply)
                 if self._restart:  # simulate the reboot after a mode change
                     self._restart = False
                     conn.close()
@@ -88,6 +122,7 @@ class MockDevice:
             if payload[:1] != bytes((p.PROTOCOL_VERSION,)):
                 return p.frame(p.MSG_ERROR, b"\x04")
             features = (p.FEATURE_GAMEPAD if self.gamepad else 0) | (p.FEATURE_KEYBOARD if self.keyboard else 0)
+            features |= p.FEATURE_PACED_TYPING if self.paced else 0
             return p.frame(p.MSG_HELLO_ACK, bytes((p.PROTOCOL_VERSION, features)) + b"mock")
         if msg_type == p.MSG_SET_MODE and len(payload) == 1:
             if payload[0] not in p.MODE_NAMES:
@@ -124,6 +159,19 @@ class MockDevice:
             return None
         if msg_type == p.MSG_RELEASE_ALL and not payload:
             self._release_all()
+            return None
+        if msg_type == p.MSG_TYPE and self.paced and len(payload) >= 2 and len(payload) % 2 == 0:
+            if not self.keyboard:
+                return p.frame(p.MSG_ERROR, b"\x03")
+            keys = [(payload[i], payload[i + 1]) for i in range(2, len(payload), 2)]
+            if self._outstanding + len(keys) > 512:
+                return p.frame(p.MSG_ERROR, b"\x07")
+            self._outstanding += len(keys)
+            s.max_outstanding = max(s.max_outstanding, self._outstanding)
+            s.typed.extend(keys)
+            if self.verbose:
+                print(f"type {len(keys)} keys (hold {payload[0]}/{payload[1]} ms)")
+            self._typing.put(len(keys))
             return None
         known = {p.MSG_HELLO, p.MSG_PING, p.MSG_SET_MODE, p.MSG_SET_WIFI, p.MSG_GAMEPAD, p.MSG_KEYBOARD, p.MSG_RELEASE_ALL}
         return p.frame(p.MSG_ERROR, b"\x02" if msg_type in known else b"\x01")

@@ -21,6 +21,8 @@ To develop without hardware, run `uv run nxc mock-device --port 7700` in one ter
   a typo fixed with backspace, Shift+arrow selection, symbols, a held modifier, and Tab/Enter.
   Run `uv run python examples/typing_demo.py` and click into an empty text editor
   during the countdown.
+- `examples/typing_benchmark.py` measures typing speed and accuracy into the terminal it
+  runs in (board plugged into the same computer), at several hold times.
 - `examples/type_file.py` types a file or stdin through the keyboard:
   `uv run python examples/type_file.py notes.txt` or `pbpaste | uv run python examples/type_file.py`.
   Smart quotes and dashes become ASCII. Characters a US keyboard can't type are skipped
