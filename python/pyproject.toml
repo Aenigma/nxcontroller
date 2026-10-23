@@ -6,6 +6,10 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = []
 
+[project.optional-dependencies]
+# Bluetooth LE transport (nxcontroller.ble), for boards built with `--features ble`.
+ble = ["bleak>=0.22"]
+
 [project.scripts]
 nxc = "nxcontroller.cli:main"
 
