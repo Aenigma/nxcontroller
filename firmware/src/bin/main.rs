@@ -70,7 +70,11 @@ async fn main(spawner: Spawner) -> ! {
     let settings = Settings::new(FlashStorage::new(peripherals.FLASH));
     let mode = settings.mode();
     info!("USB mode: {mode:?}");
-    let parts = usb::build(driver, mode);
+    let keyboard_poll_ms = settings.keyboard_poll_ms();
+    if mode.has_keyboard() {
+        info!("keyboard poll interval: {keyboard_poll_ms} ms");
+    }
+    let parts = usb::build(driver, mode, keyboard_poll_ms);
     spawner.spawn(usb::usb_device_task(parts.device).unwrap());
     if let Some(gamepad) = parts.gamepad {
         spawner.spawn(usb::gamepad_task(gamepad).unwrap());

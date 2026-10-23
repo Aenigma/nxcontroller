@@ -116,6 +116,7 @@ enum KeyCmd {
         key: u8,
         press_ms: u8,
         release_ms: u8,
+        rollover: bool,
     },
 }
 
@@ -165,7 +166,8 @@ pub fn release_all() {
 /// Queue keystrokes (`(modifiers, key)` pairs) for the keyboard task to type at
 /// the pace the host reads them. All or nothing: returns false, queueing none,
 /// if they don't fit.
-pub fn queue_taps(press_ms: u8, release_ms: u8, keys: &[u8]) -> bool {
+pub fn queue_taps(flags: u8, press_ms: u8, release_ms: u8, keys: &[u8]) -> bool {
+    let rollover = flags & crate::protocol::type_flags::ROLLOVER != 0;
     // The control server is the only producer, so the space can't shrink under us.
     if KEYBOARD_CMDS.free_capacity() < keys.len() / 2 {
         return false;
@@ -176,6 +178,7 @@ pub fn queue_taps(press_ms: u8, release_ms: u8, keys: &[u8]) -> bool {
             key: pair[1],
             press_ms,
             release_ms,
+            rollover,
         });
     }
     true
@@ -346,7 +349,7 @@ pub struct UsbParts {
     pub keyboard: Option<HidWriter<'static, UsbDriver, 8>>,
 }
 
-pub fn build(driver: UsbDriver, mode: Mode) -> UsbParts {
+pub fn build(driver: UsbDriver, mode: Mode, keyboard_poll_ms: u8) -> UsbParts {
     MODE.store(mode as u8, Ordering::Relaxed);
     let id = if mode.has_gamepad() {
         GAMEPAD_IDENTITY
@@ -410,7 +413,7 @@ pub fn build(driver: UsbDriver, mode: Mode) -> UsbParts {
                     protocol: HidProtocolMode::Report,
                     idle_ms: 0,
                 })),
-                poll_ms: 5,
+                poll_ms: keyboard_poll_ms,
                 max_packet_size: 8,
                 hid_subclass: HidSubclass::Boot,
                 hid_boot_protocol: hid::HidBootProtocol::Keyboard,
@@ -479,6 +482,7 @@ pub async fn keyboard_task(mut writer: HidWriter<'static, UsbDriver, 8>) {
                 key,
                 press_ms,
                 release_ms,
+                rollover,
             } => {
                 // Each write completes only once the host has taken the report,
                 // so every state below is seen by the host. Nothing is skipped
@@ -487,22 +491,33 @@ pub async fn keyboard_task(mut writer: HidWriter<'static, UsbDriver, 8>) {
                     modifiers,
                     keys: NO_KEYS,
                 };
-                // Change modifiers on their own first, so the host applies Shift
-                // before the key arrives.
-                if current != idle {
-                    send_keyboard(&mut writer, &mut current, idle).await;
-                }
                 let mut down = idle;
                 down.keys[0] = key;
+                // With rollover, the previous key may still be down. Going straight
+                // to the next key in one report (previous up + next down) is fine
+                // when the modifiers match and it's a different key.
+                let held = current.keys[0];
+                let straight = held != 0 && held != key && current.modifiers == modifiers;
+                if !straight && current != idle {
+                    // Release anything still down and change modifiers on their own,
+                    // so the host applies Shift before the key arrives and a repeated
+                    // key ("ll") registers twice.
+                    send_keyboard(&mut writer, &mut current, idle).await;
+                    if held != 0 {
+                        hold(release_ms).await;
+                    }
+                }
                 send_keyboard(&mut writer, &mut current, down).await;
                 hold(press_ms).await;
-                // Always release, so a repeated key ("ll") registers twice.
-                send_keyboard(&mut writer, &mut current, idle).await;
-                hold(release_ms).await;
+                if !rollover {
+                    send_keyboard(&mut writer, &mut current, idle).await;
+                    hold(release_ms).await;
+                }
                 mark_typed();
-                // Let go of the modifiers once there's nothing more to type. While
-                // more is queued, keep them in case the next key needs them.
-                if KEYBOARD_CMDS.is_empty() && current.modifiers != 0 {
+                // Let go of everything once there's nothing more to type. While
+                // more is queued, keep modifiers (and a rolled-over key) for the
+                // next keystroke to deal with.
+                if KEYBOARD_CMDS.is_empty() && current != KeyboardReport::EMPTY {
                     send_keyboard(&mut writer, &mut current, KeyboardReport::EMPTY).await;
                 }
             }

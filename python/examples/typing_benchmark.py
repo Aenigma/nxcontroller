@@ -6,6 +6,7 @@ both) mode, then run this in a terminal and leave that terminal focused:
 
     uv run python examples/typing_benchmark.py
     uv run python examples/typing_benchmark.py --length 1000 --intervals 0 0.001 0.002 0.005
+    uv run python examples/typing_benchmark.py --poll 5 1 --rollover off on --intervals 0
 
 For each hold time it types a random string. The keystrokes land in this
 terminal, and the script reads them back and compares. Ctrl-C stops it.
@@ -77,6 +78,11 @@ def main() -> None:
     parser.add_argument("--length", type=int, default=500, help="characters per run")
     parser.add_argument("--intervals", type=float, nargs="+", default=[0.0, 0.002, 0.005, 0.01],
                         help="minimum hold times (seconds) to try")
+    parser.add_argument("--rollover", nargs="+", choices=["off", "on"], default=["off", "on"],
+                        help="try typing with and/or without rollover")
+    parser.add_argument("--poll", type=int, nargs="+", default=[],
+                        help="keyboard poll intervals (ms) to set on the board and test; "
+                             "the board restarts for each, and keeps the last one")
     parser.add_argument("--seed", type=int, default=1)
     args = parser.parse_args()
 
@@ -99,14 +105,23 @@ def main() -> None:
         try:
             time.sleep(1.0)
             drain()
-            print(f"{'interval':>9}  {'chars/s':>8}  {'errors':>7}  result")
-            for interval in args.intervals:
+            print(f"{'poll':>5}  {'rollover':>8}  {'interval':>9}  {'chars/s':>8}  {'errors':>7}  result")
+            runs = [(poll, ro, iv) for poll in (args.poll or [None]) for ro in args.rollover for iv in args.intervals]
+            current_poll = None
+            for poll, ro, interval in runs:
+                if poll is not None and poll != current_poll:
+                    termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old)
+                    print(f"-- setting keyboard poll to {poll} ms (board restarts)...")
+                    nx.set_keyboard_poll_ms(poll)
+                    current_poll = poll
+                    time.sleep(1.5)  # let the USB keyboard reconnect
+                    tty.setcbreak(sys.stdin)
                 while not wait_for_focus(nx):
                     print("  this terminal doesn't have focus: click into it (retrying in 3 s)")
                     time.sleep(3)
                 text = "".join(rng.choice(ALPHABET) for _ in range(args.length))
                 start = time.monotonic()
-                nx.type_text(text, interval=interval)
+                nx.type_text(text, interval=interval, rollover=ro == "on")
                 typed_s = time.monotonic() - start
                 got = read_back(len(text), idle_timeout=2.0)
                 drain()
@@ -120,7 +135,8 @@ def main() -> None:
                     errors = sum(max(i2 - i1, j2 - j1) for op, i1, i2, j1, j2 in sm.get_opcodes() if op != "equal")
                     verdict = f"MISMATCH (got {len(got)}/{len(text)} chars)"
                     details = describe_diff(text, got)
-                print(f"{interval * 1000:7.1f}ms  {len(text) / typed_s:8.0f}  {errors:7d}  {verdict}")
+                poll_s = f"{poll}ms" if poll is not None else "-"
+                print(f"{poll_s:>5}  {ro:>8}  {interval * 1000:7.1f}ms  {len(text) / typed_s:8.0f}  {errors:7d}  {verdict}")
                 for line in details:
                     print(line)
         except NXError as e:

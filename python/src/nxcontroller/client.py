@@ -217,6 +217,7 @@ class Controller:
         text: str,
         interval: float = 0.0,
         on_progress: Callable[[int, int], None] | None = None,
+        rollover: bool = True,
     ) -> None:
         """Type a string using a US keyboard layout. Returns once it's all typed.
 
@@ -228,6 +229,11 @@ class Controller:
         per frame. 0 means as fast as the host reads reports.
 
         `on_progress(done, total)` is called as keystrokes complete.
+
+        `rollover` lets the board go straight from one key to the next without a
+        release report in between (like fast human typing), when the next key is
+        different and needs the same modifiers: 1.6-2x faster. On by default; turn
+        it off if a host misreads fast typing.
         """
         keys = [(int(m), int(k)) for m, k in map(char_to_key, text)]
         if not keys:
@@ -261,7 +267,8 @@ class Controller:
                 return
             if sent < total and room > 0:
                 n = min(room, p.MAX_TYPE_KEYS, total - sent)
-                self._send(p.encode_type(hold_ms, hold_ms, keys[sent : sent + n]))
+                flags = p.TYPE_ROLLOVER if rollover else 0
+                self._send(p.encode_type(flags, hold_ms, hold_ms, keys[sent : sent + n]))
                 sent += n
             elif time.monotonic() - last_change > TYPE_STALL_TIMEOUT:
                 raise NXError(f"typing stalled after {done}/{total} keystrokes")
@@ -317,7 +324,25 @@ class Controller:
         ack = self._request(p.encode_set_mode(code), p.ModeAck)
         if not ack.restarting:
             return  # already in that mode
+        self._await_restart(timeout)
+        if self.info.features & p.MODE_MASK != code:
+            raise NXError(f"device came back in {self.mode!r} mode, expected {mode!r}")
 
+    def set_keyboard_poll_ms(self, ms: int, timeout: float = 30.0) -> None:
+        """Set how often (1-255 ms) the USB host polls the board's keyboard.
+
+        Lower means faster typing (two polls per keystroke at most). The default is
+        5 ms; 0 restores it. Saved on the board, and applied by restarting it (the
+        USB keyboard reconnects). This call waits and reconnects.
+        """
+        if not 0 <= ms <= 255:
+            raise ValueError("poll interval must be 0-255 ms")
+        ack = self._request(p.encode_set_option(p.OPTION_KEYBOARD_POLL_MS, ms), p.OptionAck)
+        if ack.restarting:
+            self._await_restart(timeout)
+
+    def _await_restart(self, timeout: float) -> None:
+        """The board acked a change and is rebooting: reconnect once it's back."""
         name = self.info.name
         self._drop_socket()
         self._reset_state()
@@ -327,8 +352,6 @@ class Controller:
             sock = self._try_reconnect(name)
             if sock is not None:
                 self._attach(sock)
-                if self.info.features & p.MODE_MASK != code:
-                    raise NXError(f"device came back in {self.mode!r} mode, expected {mode!r}")
                 return
             if time.monotonic() > deadline:
                 raise NXError(f"device did not come back within {timeout:.0f}s")

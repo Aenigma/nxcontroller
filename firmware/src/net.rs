@@ -13,7 +13,7 @@ use esp_radio::wifi::{Config as WifiConfig, Interface, WifiController};
 use log::{info, warn};
 
 use crate::config::{DEVICE_NAME, SETUP_SSID};
-use crate::protocol::{self, Command, error, feature, msg};
+use crate::protocol::{self, Command, error, feature, msg, option};
 use crate::settings::Mode;
 use crate::{SharedSettings, restart, setup, usb};
 
@@ -225,6 +225,45 @@ async fn serve(socket: &mut TcpSocket<'_>, settings: SharedSettings) -> bool {
                     }
                 }
             }
+            Ok(Command::SetOption {
+                id: option::KEYBOARD_POLL_MS,
+                value,
+            }) => {
+                let mut settings = settings.lock().await;
+                let ms = if value == 0 {
+                    crate::settings::DEFAULT_KEYBOARD_POLL_MS
+                } else {
+                    value
+                };
+                if ms == settings.keyboard_poll_ms() {
+                    Some(protocol::frame(
+                        &mut out,
+                        msg::OPTION_ACK,
+                        &[option::KEYBOARD_POLL_MS, ms, 0],
+                    ))
+                } else {
+                    match settings.set_keyboard_poll_ms(ms) {
+                        Ok(()) => {
+                            info!("keyboard poll interval set to {ms} ms");
+                            restart = true;
+                            Some(protocol::frame(
+                                &mut out,
+                                msg::OPTION_ACK,
+                                &[option::KEYBOARD_POLL_MS, ms, 1],
+                            ))
+                        }
+                        Err(e) => {
+                            warn!("saving option failed: {e:?}");
+                            Some(protocol::frame(&mut out, msg::ERROR, &[error::STORAGE]))
+                        }
+                    }
+                }
+            }
+            Ok(Command::SetOption { .. }) => Some(protocol::frame(
+                &mut out,
+                msg::ERROR,
+                &[error::INVALID_VALUE],
+            )),
             Ok(Command::Gamepad(report)) if usb::mode().has_gamepad() => {
                 usb::submit_gamepad(report);
                 None
@@ -234,11 +273,12 @@ async fn serve(socket: &mut TcpSocket<'_>, settings: SharedSettings) -> bool {
                 None
             }
             Ok(Command::Type {
+                flags,
                 press_ms,
                 release_ms,
                 keys,
             }) if usb::mode().has_keyboard() => {
-                if usb::queue_taps(press_ms, release_ms, keys) {
+                if usb::queue_taps(flags, press_ms, release_ms, keys) {
                     None
                 } else {
                     warn!("keystroke queue full, rejecting {} keys", keys.len() / 2);

@@ -131,5 +131,10 @@ cd python && uv run nxc --host 127.0.0.1 ping
   On a Switch, register the pad by pressing L+R on *Controllers → Change Grip/Order*
   (`nxc tap L R --duration 0.5`). Calling an input type the current mode
   lacks raises `NXError`.
+- **Typing speed:** the board paces keystrokes itself and never drops one.
+  `type_text` uses rollover by default (no release report between different keys).
+  On a Mac that measured about 164 chars/s at the default 5 ms keyboard polling and
+  about 356 chars/s at 1 ms (`nxc keyboard-poll 1`; `nxc keyboard-poll 0` restores 5 ms).
+  `examples/typing_benchmark.py` measures it on your setup.
 - WiFi power saving is disabled for latency.
 - Toolchain: `rust-toolchain.toml` pins the `esp` channel. Run `espup update` to upgrade it.

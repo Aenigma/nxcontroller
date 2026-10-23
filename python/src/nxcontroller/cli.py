@@ -38,6 +38,9 @@ def main(argv: list[str] | None = None) -> int:
     type_ = sub.add_parser("type", help="type text on the USB keyboard")
     type_.add_argument("text")
     type_.add_argument("--interval", type=float, default=0.0, help="minimum seconds per key state (default: as fast as possible)")
+    type_.add_argument("--no-rollover", action="store_true", help="release every key before the next one")
+    poll = sub.add_parser("keyboard-poll", help="set the USB keyboard poll interval in ms (1-255, 0 = default 5); restarts the board")
+    poll.add_argument("ms", type=int)
     key = sub.add_parser("key", help="tap a key, e.g. `nxc key enter`")
     key.add_argument("keys", nargs="+")
     mock = sub.add_parser("mock-device", help="run a fake device on localhost for testing")
@@ -101,7 +104,11 @@ def main(argv: list[str] | None = None) -> int:
             elif args.cmd == "dpad":
                 nx.dpad_tap(args.direction)
             elif args.cmd == "type":
-                nx.type_text(args.text, interval=args.interval)
+                nx.type_text(args.text, interval=args.interval, rollover=not args.no_rollover)
+            elif args.cmd == "keyboard-poll":
+                print("setting keyboard poll interval, waiting for the board to restart...")
+                nx.set_keyboard_poll_ms(args.ms)
+                print(f"done ({args.ms or 5} ms)")
             elif args.cmd == "key":
                 nx.key_tap(*args.keys)
     except (NXError, OSError, ValueError) as e:

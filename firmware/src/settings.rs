@@ -16,7 +16,10 @@ const MAGIC: [u8; 4] = *b"NXCM";
 pub const MAX_SSID_LEN: usize = 32;
 pub const MAX_PASSWORD_LEN: usize = 64;
 
-// Record layout: magic[4] | mode | ssid_len | password_len | reserved | ssid[32] | password[64]
+// Record layout: magic[4] | mode | ssid_len | password_len | keyboard_poll_ms | ssid[32] | password[64]
+const KEYBOARD_POLL_AT: usize = 7;
+/// USB polling interval for the keyboard when none is saved.
+pub const DEFAULT_KEYBOARD_POLL_MS: u8 = 5;
 const SSID_AT: usize = 8;
 const PASSWORD_AT: usize = SSID_AT + MAX_SSID_LEN;
 const RECORD_LEN: usize = PASSWORD_AT + MAX_PASSWORD_LEN;
@@ -106,6 +109,19 @@ impl Settings {
 
     pub fn mode(&self) -> Mode {
         Mode::from_u8(self.record[4]).unwrap_or(Mode::DEFAULT)
+    }
+
+    /// How often (ms) the USB host should poll the keyboard. Lower is faster typing.
+    pub fn keyboard_poll_ms(&self) -> u8 {
+        match self.record[KEYBOARD_POLL_AT] {
+            0 | 0xFF => DEFAULT_KEYBOARD_POLL_MS, // unset
+            ms => ms,
+        }
+    }
+
+    pub fn set_keyboard_poll_ms(&mut self, ms: u8) -> Result<(), SettingsError> {
+        self.record[KEYBOARD_POLL_AT] = ms;
+        self.save()
     }
 
     pub fn set_mode(&mut self, mode: Mode) -> Result<(), SettingsError> {

@@ -16,6 +16,7 @@ pub mod msg {
     pub const PING: u8 = 0x02;
     pub const SET_MODE: u8 = 0x03;
     pub const SET_WIFI: u8 = 0x04;
+    pub const SET_OPTION: u8 = 0x05;
     pub const GAMEPAD: u8 = 0x10;
     pub const KEYBOARD: u8 = 0x11;
     pub const TYPE: u8 = 0x12;
@@ -26,6 +27,7 @@ pub mod msg {
     pub const MODE_ACK: u8 = 0x83;
     pub const WIFI_ACK: u8 = 0x84;
     pub const TYPE_PROGRESS: u8 = 0x85;
+    pub const OPTION_ACK: u8 = 0x86;
     pub const ERROR: u8 = 0x8F;
 }
 
@@ -34,6 +36,19 @@ pub mod feature {
     pub const KEYBOARD: u8 = 0x02;
     /// The device paces TYPE keystrokes itself.
     pub const PACED_TYPING: u8 = 0x80;
+}
+
+/// SET_OPTION ids.
+pub mod option {
+    /// USB keyboard polling interval in ms (1..=255; 0 = default). Applies after a restart.
+    pub const KEYBOARD_POLL_MS: u8 = 1;
+}
+
+/// TYPE flags.
+pub mod type_flags {
+    /// Go straight from one key to the next without a release report in
+    /// between, when the modifiers match and the key differs.
+    pub const ROLLOVER: u8 = 0x01;
 }
 
 pub mod error {
@@ -64,9 +79,14 @@ pub enum Command<'a> {
     /// Keystrokes for the device to type at its own pace: `keys` holds
     /// `(modifiers, key)` pairs.
     Type {
+        flags: u8,
         press_ms: u8,
         release_ms: u8,
         keys: &'a [u8],
+    },
+    SetOption {
+        id: u8,
+        value: u8,
     },
     Gamepad(GamepadReport),
     Keyboard(KeyboardReport),
@@ -130,14 +150,22 @@ pub fn parse(msg_type: u8, payload: &[u8]) -> Result<Command<'_>, u8> {
             }))
         }
         msg::TYPE => {
-            // press_ms | release_ms | (modifiers, key) pairs
-            if payload.len() < 2 || !payload.len().is_multiple_of(2) {
+            // flags | press_ms | release_ms | (modifiers, key) pairs
+            if payload.len() < 3 || payload.len().is_multiple_of(2) {
                 return Err(error::BAD_LENGTH);
             }
             Ok(Command::Type {
-                press_ms: payload[0],
-                release_ms: payload[1],
-                keys: &payload[2..],
+                flags: payload[0],
+                press_ms: payload[1],
+                release_ms: payload[2],
+                keys: &payload[3..],
+            })
+        }
+        msg::SET_OPTION => {
+            expect(2)?;
+            Ok(Command::SetOption {
+                id: payload[0],
+                value: payload[1],
             })
         }
         msg::RELEASE_ALL => {

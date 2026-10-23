@@ -157,7 +157,7 @@ def test_type_text_paced(device):
         nx.type_text(SAMPLE, interval=0.004)
     assert _decode_typed(device.state.typed) == SAMPLE
     type_msgs = [pl for t, pl in device.state.log if t == p.MSG_TYPE]
-    assert all(pl[:2] == bytes((4, 4)) for pl in type_msgs)
+    assert all(pl[:3] == bytes((p.TYPE_ROLLOVER, 4, 4)) for pl in type_msgs)  # rollover is the default
     # Paced typing never falls back to per-key KEYBOARD messages.
     assert not [t for t, _ in device.state.log if t == p.MSG_KEYBOARD]
 
@@ -188,3 +188,20 @@ def test_type_text_falls_back_on_old_firmware():
     assert dev.state.typed == []
     kb = [pl for t, pl in dev.state.log if t == p.MSG_KEYBOARD]
     assert [pl[1] for pl in kb][:4] == [int(Key.H), 0, int(Key.I), 0]
+
+
+def test_type_text_without_rollover(device):
+    with Controller.connect(device.host, device.port) as nx:
+        nx.type_text("abc", rollover=False)
+    type_msgs = [pl for t, pl in device.state.log if t == p.MSG_TYPE]
+    assert type_msgs and all(pl[0] == 0 for pl in type_msgs)
+    assert _decode_typed(device.state.typed) == "abc"
+
+
+def test_set_keyboard_poll_ms_restarts_and_reconnects(device):
+    with Controller.connect(device.host, device.port) as nx:
+        nx.set_keyboard_poll_ms(1, timeout=5)
+        assert device.keyboard_poll_ms == 1
+        nx.set_keyboard_poll_ms(1)  # unchanged: no restart
+        nx.type_text("ok")
+    assert _decode_typed(device.state.typed) == "ok"

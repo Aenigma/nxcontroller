@@ -41,7 +41,8 @@ Every message, in both directions, has the same shape:
 | `0x04` | SET_WIFI     | `ssid_len: u8, ssid: utf8[ssid_len], password: utf8[..]` |
 | `0x10` | GAMEPAD      | `buttons: u16, hat: u8, lx: u8, ly: u8, rx: u8, ry: u8`  |
 | `0x11` | KEYBOARD     | `modifiers: u8, keys: [u8; 6]`                           |
-| `0x12` | TYPE         | `press_ms: u8, release_ms: u8, (modifiers: u8, key: u8)[..126]` |
+| `0x05` | SET_OPTION   | `option: u8, value: u8`                                  |
+| `0x12` | TYPE         | `flags: u8, press_ms: u8, release_ms: u8, (modifiers: u8, key: u8)[..126]` |
 | `0x1F` | RELEASE_ALL  | *(empty)*                                                |
 
 `GAMEPAD` and `KEYBOARD` carry the **complete** state, not deltas. The device
@@ -60,6 +61,7 @@ check that the link is up.
 | `0x83` | MODE_ACK   | `mode: u8, restarting: u8`                                    |
 | `0x84` | WIFI_ACK   | *(empty)*                                                     |
 | `0x85` | TYPE_PROGRESS | `count: u16` (keystrokes finished since the last one)      |
+| `0x86` | OPTION_ACK | `option: u8, value: u8, restarting: u8`                       |
 | `0x8F` | ERROR      | `code: u8`                                                    |
 
 `features` bit flags: `0x01` gamepad, `0x02` keyboard, `0x80` paced typing (TYPE). These reflect the
@@ -79,10 +81,16 @@ Firmware that sets feature bit `0x80` in HELLO_ACK types `TYPE` keystrokes at
 the pace the USB host reads them, instead of the client timing KEYBOARD states
 over the network. For each `(modifiers, key)` it:
 
-1. changes the modifiers on their own first, if they differ from the current state;
+1. changes the modifiers on their own first, if they differ from the current state
+   (releasing any key still down);
 2. presses the key, then holds for at least `press_ms`;
 3. releases the key (so repeated keys register twice), then holds for at least `release_ms`;
-4. releases the modifiers once the queue is empty.
+4. releases everything once the queue is empty.
+
+With flag `0x01` (rollover), step 3 is skipped. The next keystroke goes straight
+from the held key to its own in one report when its modifiers match and the key
+differs; otherwise it releases first as in step 1. That needs about one report
+per character instead of two.
 
 Every report write completes only after the host has taken the report, so no
 state is skipped however fast keystrokes are queued. `press_ms`/`release_ms`
@@ -94,6 +102,17 @@ with `TYPE_PROGRESS`, sent while the client is idle, and coalesced. Clients
 should keep at most 256 keystrokes outstanding (sent minus reported). A TYPE that
 doesn't fit is rejected whole with error `7`. RELEASE_ALL and disconnecting clear the
 queue, so typing stops within about one keystroke.
+
+## Options (SET_OPTION)
+
+| Option | Value | Effect |
+|--------|-------|--------|
+| `1` keyboard poll interval | `1..=255` ms, `0` = default (5) | How often the host polls the keyboard endpoint. Lower is faster typing. |
+
+Options are saved with the other settings. If the value changes, the device
+replies `OPTION_ACK` with `restarting = 1`, then closes the connection and
+reboots (the USB device re-enumerates). Otherwise it replies with `restarting = 0`.
+An unknown option is error `5`.
 
 ## USB mode
 

@@ -46,6 +46,7 @@ class MockDevice:
         self.keyboard = keyboard
         self.verbose = verbose
         self.paced = paced
+        self.keyboard_poll_ms = 5
         self.key_time = key_time
         self._restart = False
         self._outstanding = 0
@@ -160,20 +161,29 @@ class MockDevice:
         if msg_type == p.MSG_RELEASE_ALL and not payload:
             self._release_all()
             return None
-        if msg_type == p.MSG_TYPE and self.paced and len(payload) >= 2 and len(payload) % 2 == 0:
+        if msg_type == p.MSG_SET_OPTION and len(payload) == 2:
+            if payload[0] != p.OPTION_KEYBOARD_POLL_MS:
+                return p.frame(p.MSG_ERROR, b"\x05")
+            ms = payload[1] or 5
+            if ms == self.keyboard_poll_ms:
+                return p.frame(p.MSG_OPTION_ACK, bytes((payload[0], ms, 0)))
+            self.keyboard_poll_ms = ms
+            self._restart = True
+            return p.frame(p.MSG_OPTION_ACK, bytes((payload[0], ms, 1)))
+        if msg_type == p.MSG_TYPE and self.paced and len(payload) >= 3 and len(payload) % 2 == 1:
             if not self.keyboard:
                 return p.frame(p.MSG_ERROR, b"\x03")
-            keys = [(payload[i], payload[i + 1]) for i in range(2, len(payload), 2)]
+            keys = [(payload[i], payload[i + 1]) for i in range(3, len(payload), 2)]
             if self._outstanding + len(keys) > 512:
                 return p.frame(p.MSG_ERROR, b"\x07")
             self._outstanding += len(keys)
             s.max_outstanding = max(s.max_outstanding, self._outstanding)
             s.typed.extend(keys)
             if self.verbose:
-                print(f"type {len(keys)} keys (hold {payload[0]}/{payload[1]} ms)")
+                print(f"type {len(keys)} keys (flags {payload[0]:#x}, hold {payload[1]}/{payload[2]} ms)")
             self._typing.put(len(keys))
             return None
-        known = {p.MSG_HELLO, p.MSG_PING, p.MSG_SET_MODE, p.MSG_SET_WIFI, p.MSG_GAMEPAD, p.MSG_KEYBOARD, p.MSG_RELEASE_ALL}
+        known = {p.MSG_HELLO, p.MSG_PING, p.MSG_SET_MODE, p.MSG_SET_WIFI, p.MSG_SET_OPTION, p.MSG_GAMEPAD, p.MSG_KEYBOARD, p.MSG_RELEASE_ALL}
         return p.frame(p.MSG_ERROR, b"\x02" if msg_type in known else b"\x01")
 
     def _release_all(self) -> None:

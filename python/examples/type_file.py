@@ -63,6 +63,8 @@ def main() -> None:
                         help="minimum seconds each key stays pressed and released (max 0.255). "
                              "0 = as fast as the USB host reads; raise it if an app drops keys")
     parser.add_argument("--countdown", type=int, default=5, help="seconds to focus the target window")
+    parser.add_argument("--no-rollover", action="store_true",
+                        help="release every key before the next one (slower; try it if a host misreads keys)")
     parser.add_argument("--on-unknown", choices=["skip", "fail"], default="skip",
                         help="what to do with characters a US keyboard can't type")
     parser.add_argument("--strip-indent", action="store_true",
@@ -105,7 +107,7 @@ def main() -> None:
             print(f"typed {n}/{total} ({n * 100 // total}%)   ", end="\r", file=sys.stderr, flush=True)
 
         try:
-            nx.type_text(text, interval=args.interval, on_progress=progress)
+            nx.type_text(text, interval=args.interval, on_progress=progress, rollover=not args.no_rollover)
         except KeyboardInterrupt:
             # Leaving the `with` block releases everything and clears the board's queue.
             print(f"\nstopped after {done} characters", file=sys.stderr)
