@@ -72,6 +72,23 @@ embassy-usb = { version = "0.6", default-features = false }
 embassy-sync = "0.8.0"
 embassy-futures = "0.1.2"
 
+# --- Bluetooth LE transport (optional, `--features ble`) ---
+# Versions match `esp-generate -o wifi -o ble-trouble` for esp-radio 1.0.0-beta.1.
+# `security` = LE Secure Connections pairing and bonding. We only use the
+# peripheral role, but trouble-host 0.7.0 fails to compile `security` without
+# `central` (gap::GAP_SERVICE_ATTRIBUTE_COUNT is cfg'd out), so keep the defaults.
+trouble-host = { version = "0.7.0", optional = true, features = [
+  "gatt",
+  "log",
+  "security",
+] }
+
+[features]
+default = []
+# Second control transport over BLE (GATT), alongside WiFi. Needs esp-radio's
+# `coex` so WiFi and BLE can share the one radio.
+ble = ["dep:trouble-host", "esp-radio/ble", "esp-radio/coex"]
+
 
 # For fine tuning these settings, please refer to https://doc.rust-lang.org/cargo/reference/profiles.html
 [profile.dev]

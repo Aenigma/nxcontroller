@@ -46,6 +46,9 @@ async fn main(spawner: Spawner) -> ! {
     let peripherals = esp_hal::init(config);
 
     esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 73744);
+    // BLE: the controller and WiFi/BT coexistence allocate from the heap.
+    #[cfg(feature = "ble")]
+    esp_alloc::heap_allocator!(size: 64 * 1024);
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
@@ -109,6 +112,16 @@ async fn main(spawner: Spawner) -> ! {
     controller
         .set_power_saving(PowerSaveMode::None)
         .expect("failed to disable WiFi power saving");
+
+    // --- Bluetooth LE (optional second control transport) ---
+    // After WiFi: both share the radio through esp-radio's `coex`.
+    #[cfg(feature = "ble")]
+    {
+        let connector =
+            esp_radio::ble::controller::BleConnector::new(peripherals.BT, Default::default())
+                .expect("failed to initialize BLE");
+        spawner.spawn(nxcontroller_firmware::ble::ble_task(connector).unwrap());
+    }
 
     let rng = Rng::new();
     let seed = (u64::from(rng.random()) << 32) | u64::from(rng.random());
