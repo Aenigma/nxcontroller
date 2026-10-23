@@ -2,6 +2,9 @@
 # firmware
 firmware/target/
 firmware/.env
+# web flasher build output (scripts/web.sh)
+web/firmware/
+web/manifest.json
 # python
 python/.venv/
 __pycache__/

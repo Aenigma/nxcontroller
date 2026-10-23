@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nxcontroller installer</title>
+<meta name="description" content="Flash the nxcontroller firmware onto an ESP32-S3 from your browser.">
+<script type="module" src="https://unpkg.com/esp-web-tools@10.4.0/dist/web/install-button.js?module"></script>
+<style>
+  :root {
+    --bg: #f7f7f5; --fg: #1b1b1b; --muted: #5d5d5a; --card: #ffffff;
+    --line: #e2e2dd; --accent: #2f5fd0; --accent-fg: #ffffff; --code: #efefea;
+    --warn: #8a5a00; --warn-bg: #fff6e0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #151515; --fg: #ececea; --muted: #a3a39e; --card: #1f1f1f;
+      --line: #333331; --accent: #7aa2ff; --accent-fg: #0d1426; --code: #2a2a28;
+      --warn: #f2c46b; --warn-bg: #2d2615;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 680px; margin: 0 auto; padding: 40px 16px 64px; }
+  h1 { font-size: 1.9rem; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .lede { color: var(--muted); margin: 0 0 28px; }
+  section {
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+    padding: 20px 22px; margin-bottom: 16px;
+  }
+  h2 { font-size: 1.05rem; margin: 0 0 10px; }
+  ol { margin: 0; padding-left: 1.3em; }
+  li { margin: 6px 0; }
+  code { background: var(--code); padding: 1px 6px; border-radius: 5px; font-size: 0.92em; }
+  kbd {
+    border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px;
+    padding: 0 6px; font: 600 0.85em ui-monospace, monospace; background: var(--card);
+  }
+  .install { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin: 14px 0 4px; }
+  .install button {
+    background: var(--accent); color: var(--accent-fg); border: 0; border-radius: 8px;
+    padding: 11px 22px; font: 600 1rem system-ui, sans-serif; cursor: pointer;
+  }
+  .note { color: var(--muted); font-size: 0.92rem; }
+  .warn { background: var(--warn-bg); color: var(--warn); border-radius: 8px; padding: 10px 12px; }
+  pre { background: var(--code); padding: 12px 14px; border-radius: 8px; overflow-x: auto; margin: 10px 0 0; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>nxcontroller installer</h1>
+  <p class="lede">Turn an ESP32-S3 into a WiFi-controlled USB gamepad and keyboard for a Switch or PC.</p>
+
+  <section>
+    <h2>1. Put the board in flashing mode</h2>
+    <ol>
+      <li>Plug the board's <b>USB</b> port into this computer. That's the native port, not the one labelled UART/COM.</li>
+      <li><b>Hold <kbd>BOOT</kbd>, tap <kbd>RST</kbd>, then let go of <kbd>BOOT</kbd>.</b></li>
+    </ol>
+    <p class="warn">You have to do this before every install. Until you do, the port you need
+      (<b>USB JTAG/serial debug unit</b>) won't appear in the list at all, because the running
+      firmware turns that port into a controller.</p>
+  </section>
+
+  <section>
+    <h2>2. Install</h2>
+    <div class="install">
+      <esp-web-install-button manifest="manifest.json">
+        <button slot="activate">Connect &amp; install</button>
+        <span slot="unsupported" class="warn">Your browser can't flash devices. Use Chrome or Edge on a desktop computer.</span>
+        <span slot="not-allowed" class="warn">Flashing needs this page served over https (or from localhost).</span>
+      </esp-web-install-button>
+    </div>
+    <ol>
+      <li>Pick <b>USB JTAG/serial debug unit</b> in the port list. Don't pick <b>USB Single Serial</b>,
+        <b>CP210x</b> or <b>CH34x</b>: that's the UART chip, and installing through it fails on many Macs
+        ("Failed to initialize").</li>
+      <li>On a first install, tick <b>erase</b>. On updates, leave it off to keep your saved WiFi and USB mode.</li>
+      <li><b>When it finishes, press <kbd>RST</kbd>.</b> The board stays in flashing mode until you do,
+        so the setup hotspot won't appear before that.</li>
+    </ol>
+    <p class="note">If you get "Failed to open serial port", the board left flashing mode while connecting.
+      Reload the page, then <b>keep holding <kbd>BOOT</kbd></b> while you tap <kbd>RST</kbd>, click
+      <i>Connect &amp; install</i> and pick the port. Let go once writing starts.</p>
+    <p class="note"><b>Logs:</b> the native port never shows logs, so the installer's console stays blank
+      there. To watch the board's log, connect to the <b>UART</b> port instead (<i>USB Single Serial</i>
+      and similar) and press <kbd>RST</kbd>.</p>
+  </section>
+
+  <section>
+    <h2>3. Connect it to your WiFi</h2>
+    <ol>
+      <li>On your phone or laptop, join the open WiFi network <code>nxcontroller-setup</code>.</li>
+      <li>The setup page should pop up. If it doesn't, open <code>http://192.168.4.1</code>.</li>
+      <li>Enter your network's name and password (2.4&nbsp;GHz only). The board restarts and joins it.</li>
+    </ol>
+    <p class="note">If the board ever can't reach its network for about 30 seconds, the setup hotspot comes back so you can fix the details.</p>
+  </section>
+
+  <section>
+    <h2>4. Control it</h2>
+    <p>From a computer on the same network, with the <code>nxcontroller</code> Python package:</p>
+    <pre>nxc discover
+nxc mode keyboard     # or gamepad / both
+nxc type "hello"</pre>
+    <p class="note">On a Switch, register the gamepad with <code>nxc tap L R --duration 0.5</code> on <i>Controllers → Change Grip/Order</i>.</p>
+  </section>
+</main>
+</body>
+</html>

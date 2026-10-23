@@ -25,9 +25,16 @@ versions and ships on its own. They are coupled only through
 
 ## Quick start
 
+**No toolchain: web flasher.** `make web` builds a generic firmware and serves
+the installer page on http://localhost:8700 (Chrome or Edge). Host `web/` on any
+https static host to share it. After installing, join the `nxcontroller-setup`
+WiFi hotspot from your phone and enter your network's details.
+
+**From source:**
+
 ```bash
 scripts/setup.sh                 # one-time: espup + Xtensa toolchain, espflash, python env
-$EDITOR firmware/.env            # WIFI_SSID / WIFI_PASSWORD / NXC_NAME
+$EDITOR firmware/.env            # optional WIFI_SSID / WIFI_PASSWORD, NXC_NAME
 scripts/flash.sh                 # build + flash + serial monitor
 ```
 
@@ -93,8 +100,17 @@ cd python && uv run nxc --host 127.0.0.1 ping
 
 ## Firmware notes
 
-- WiFi credentials are baked in at compile time from `firmware/.env`, which is
-  gitignored. Build through the scripts so the file gets loaded.
+- **WiFi credentials** come from, in order: those saved on the board, then any
+  compiled in from `firmware/.env` (gitignored; build through the scripts), then
+  none. With none, or after 3 failed connection attempts, the board opens the open
+  `nxcontroller-setup` hotspot with a setup page at `http://192.168.4.1`. It keeps
+  retrying its network in the meantime, so a slow router still gets picked up.
+  Move it to another network with `uv run nxc wifi "SSID" "password"`.
+  The hotspot is open, so anyone nearby can configure the board while it's up.
+- **Web flasher** (`scripts/web.sh`, files in `web/`): ESP Web Tools with the
+  bootloader, partition table and app shipped as separate parts, so updating
+  doesn't wipe saved WiFi or mode unless you tick "erase". It always builds without
+  your `.env` WiFi.
 - **USB mode** is chosen at runtime over WiFi and saved on the board:
 
   | Mode       | USB device                     | Identity                    |

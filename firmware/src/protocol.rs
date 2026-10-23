@@ -15,6 +15,7 @@ pub mod msg {
     pub const HELLO: u8 = 0x01;
     pub const PING: u8 = 0x02;
     pub const SET_MODE: u8 = 0x03;
+    pub const SET_WIFI: u8 = 0x04;
     pub const GAMEPAD: u8 = 0x10;
     pub const KEYBOARD: u8 = 0x11;
     pub const RELEASE_ALL: u8 = 0x1F;
@@ -22,6 +23,7 @@ pub mod msg {
     pub const HELLO_ACK: u8 = 0x81;
     pub const PONG: u8 = 0x82;
     pub const MODE_ACK: u8 = 0x83;
+    pub const WIFI_ACK: u8 = 0x84;
     pub const ERROR: u8 = 0x8F;
 }
 
@@ -40,17 +42,18 @@ pub mod error {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Command {
+pub enum Command<'a> {
     Hello { version: u8 },
     Ping { seq: u32 },
     SetMode { mode: u8 },
+    SetWifi { ssid: &'a str, password: &'a str },
     Gamepad(GamepadReport),
     Keyboard(KeyboardReport),
     ReleaseAll,
 }
 
 /// Decode a client message. On failure returns the protocol error code.
-pub fn parse(msg_type: u8, payload: &[u8]) -> Result<Command, u8> {
+pub fn parse(msg_type: u8, payload: &[u8]) -> Result<Command<'_>, u8> {
     let expect = |len: usize| {
         if payload.len() == len {
             Ok(())
@@ -73,6 +76,17 @@ pub fn parse(msg_type: u8, payload: &[u8]) -> Result<Command, u8> {
         msg::SET_MODE => {
             expect(1)?;
             Ok(Command::SetMode { mode: payload[0] })
+        }
+        msg::SET_WIFI => {
+            // ssid_len | ssid | password (rest of the payload)
+            let ssid_len = *payload.first().ok_or(error::BAD_LENGTH)? as usize;
+            let ssid = payload.get(1..1 + ssid_len).ok_or(error::BAD_LENGTH)?;
+            let password = &payload[1 + ssid_len..];
+            let as_str = |b| core::str::from_utf8(b).map_err(|_| error::INVALID_VALUE);
+            Ok(Command::SetWifi {
+                ssid: as_str(ssid)?,
+                password: as_str(password)?,
+            })
         }
         msg::GAMEPAD => {
             expect(7)?;

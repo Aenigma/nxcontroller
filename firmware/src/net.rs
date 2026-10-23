@@ -1,41 +1,87 @@
-//! WiFi station, TCP control server and UDP discovery responder.
+//! WiFi (station, with the setup hotspot as fallback), TCP control server and
+//! UDP discovery responder.
 
 use embassy_net::tcp::TcpSocket;
 use embassy_net::udp::{PacketMetadata, UdpSocket};
 use embassy_net::{Runner, Stack};
 use embassy_time::{Duration, Timer};
 use embedded_io_async::{Read, Write};
-use esp_radio::wifi::{Interface, WifiController};
+use esp_radio::wifi::ap::AccessPointConfig;
+use esp_radio::wifi::sta::StationConfig;
+use esp_radio::wifi::{Config as WifiConfig, Interface, WifiController};
 use log::{info, warn};
 
-use crate::config::DEVICE_NAME;
+use crate::config::{DEVICE_NAME, SETUP_SSID};
 use crate::protocol::{self, Command, error, msg};
-use crate::settings::{Mode, Settings};
-use crate::usb;
+use crate::settings::Mode;
+use crate::{SharedSettings, restart, setup, usb};
 
+/// Failed connection attempts before the setup hotspot comes up alongside.
+const FAILURES_BEFORE_SETUP: u32 = 3;
+
+/// Joins `station` if we have credentials. Without them, or after repeated
+/// failures, opens the setup hotspot (while still retrying the network, so a
+/// router that was merely slow to boot still gets picked up).
 #[embassy_executor::task]
-pub async fn wifi_task(mut controller: WifiController<'static>) {
+pub async fn wifi_task(mut controller: WifiController<'static>, station: Option<StationConfig>) {
+    let ap = AccessPointConfig::default().with_ssid(SETUP_SSID.try_into().unwrap());
+
+    let Some(station) = station else {
+        info!("WiFi: no credentials saved");
+        match controller.set_config(&WifiConfig::AccessPoint(ap)) {
+            Ok(()) => setup::announce(),
+            Err(e) => warn!("WiFi: starting setup hotspot failed: {e:?}"),
+        }
+        // Keep the controller alive: dropping it shuts WiFi down.
+        loop {
+            Timer::after(Duration::from_secs(3600)).await;
+        }
+    };
+
+    let mut failures = 0;
+    let mut hotspot_on = false;
     loop {
-        info!("WiFi: connecting to '{}'", crate::config::WIFI_SSID);
+        info!("WiFi: connecting");
         match controller.connect_async().await {
             Ok(_) => {
                 info!("WiFi: connected");
+                failures = 0;
+                if hotspot_on {
+                    // Back to station-only. Changing the config drops the link; reconnect.
+                    info!("WiFi: closing setup hotspot");
+                    let _ = controller.set_config(&WifiConfig::Station(station.clone()));
+                    hotspot_on = false;
+                    continue;
+                }
                 let _ = controller.wait_for_disconnect_async().await;
                 warn!("WiFi: disconnected");
             }
-            Err(e) => warn!("WiFi: connect failed: {e:?}"),
+            Err(e) => {
+                warn!("WiFi: connect failed: {e:?}");
+                failures += 1;
+                if failures >= FAILURES_BEFORE_SETUP && !hotspot_on {
+                    let both = WifiConfig::AccessPointStation(station.clone(), ap.clone());
+                    match controller.set_config(&both) {
+                        Ok(()) => {
+                            hotspot_on = true;
+                            setup::announce();
+                        }
+                        Err(e) => warn!("WiFi: starting setup hotspot failed: {e:?}"),
+                    }
+                }
+            }
         }
         Timer::after(Duration::from_secs(3)).await;
     }
 }
 
-#[embassy_executor::task]
+#[embassy_executor::task(pool_size = 2)]
 pub async fn net_task(mut runner: Runner<'static, Interface>) -> ! {
     runner.run().await
 }
 
 #[embassy_executor::task]
-pub async fn control_server_task(stack: Stack<'static>, mut settings: Settings) {
+pub async fn control_server_task(stack: Stack<'static>, settings: SharedSettings) {
     let mut rx_buf = [0u8; 1024];
     let mut tx_buf = [0u8; 512];
 
@@ -64,16 +110,15 @@ pub async fn control_server_task(stack: Stack<'static>, mut settings: Settings) 
         }
         info!("client connected from {:?}", socket.remote_endpoint());
 
-        let restart = serve(&mut socket, &mut settings).await;
+        let needs_restart = serve(&mut socket, settings).await;
 
         usb::release_all();
-        if restart {
-            // Let the MODE_ACK reach the client, then reboot into the new mode.
+        if needs_restart {
+            // Let the ack reach the client, then reboot with the new settings.
             socket.close();
             let _ = socket.flush().await;
-            Timer::after(Duration::from_millis(300)).await;
-            info!("restarting into {:?} mode", settings.mode());
-            esp_hal::system::software_reset();
+            info!("restarting to apply new settings");
+            restart().await;
         }
         socket.abort();
         let _ = socket.flush().await;
@@ -81,8 +126,8 @@ pub async fn control_server_task(stack: Stack<'static>, mut settings: Settings) 
     }
 }
 
-/// Handle one client. Returns true if the device should restart (mode change).
-async fn serve(socket: &mut TcpSocket<'_>, settings: &mut Settings) -> bool {
+/// Handle one client. Returns true if the device should restart (new settings).
+async fn serve(socket: &mut TcpSocket<'_>, settings: SharedSettings) -> bool {
     let mut header = [0u8; 2];
     let mut payload = [0u8; 255];
     let mut out = [0u8; 64];
@@ -130,7 +175,7 @@ async fn serve(socket: &mut TcpSocket<'_>, settings: &mut Settings) -> bool {
                 Some(new) if new == usb::mode() => {
                     Some(protocol::frame(&mut out, msg::MODE_ACK, &[mode, 0]))
                 }
-                Some(new) => match settings.set_mode(new) {
+                Some(new) => match settings.lock().await.set_mode(new) {
                     Ok(()) => {
                         info!("mode set to {new:?}");
                         restart = true;
@@ -142,6 +187,24 @@ async fn serve(socket: &mut TcpSocket<'_>, settings: &mut Settings) -> bool {
                     }
                 },
             },
+            Ok(Command::SetWifi { ssid, password }) => {
+                match settings.lock().await.set_wifi(ssid, password) {
+                    Ok(()) => {
+                        info!("WiFi credentials updated (network '{ssid}')");
+                        restart = true;
+                        Some(protocol::frame(&mut out, msg::WIFI_ACK, &[]))
+                    }
+                    Err(crate::settings::SettingsError::TooLong) => Some(protocol::frame(
+                        &mut out,
+                        msg::ERROR,
+                        &[error::INVALID_VALUE],
+                    )),
+                    Err(e) => {
+                        warn!("saving WiFi credentials failed: {e:?}");
+                        Some(protocol::frame(&mut out, msg::ERROR, &[error::STORAGE]))
+                    }
+                }
+            }
             Ok(Command::Gamepad(report)) if usb::mode().has_gamepad() => {
                 usb::submit_gamepad(report);
                 None

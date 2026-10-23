@@ -27,6 +27,9 @@ def main(argv: list[str] | None = None) -> int:
     ping.add_argument("-n", type=int, default=5)
     mode = sub.add_parser("mode", help="show or set the USB mode, e.g. `nxc mode keyboard`")
     mode.add_argument("mode", nargs="?", choices=list(p.MODES))
+    wifi = sub.add_parser("wifi", help="move the board to another WiFi network")
+    wifi.add_argument("ssid")
+    wifi.add_argument("password", nargs="?", default="", help="omit for an open network")
     tap = sub.add_parser("tap", help="tap one or more buttons together, e.g. `nxc tap A`")
     tap.add_argument("buttons", nargs="+")
     tap.add_argument("--duration", type=float, default=0.1)
@@ -83,6 +86,10 @@ def main(argv: list[str] | None = None) -> int:
                     nx.set_mode(args.mode)
                     _, usb = nx.ping()
                     print(f"now in {nx.mode} mode (usb {'configured' if usb else 'not connected yet'})")
+            elif args.cmd == "wifi":
+                nx.set_wifi(args.ssid, args.password)
+                print(f"saved; the board is restarting and joining {args.ssid!r}")
+                print("if it can't, it opens the 'nxcontroller-setup' hotspot after ~30 s")
             elif args.cmd == "ping":
                 print(f"connected to {nx.info.name!r} (protocol v{nx.info.proto_version})")
                 for _ in range(args.n):

@@ -119,3 +119,19 @@ def test_set_mode_rejects_unknown(device):
     with Controller.connect(device.host, device.port) as nx:
         with pytest.raises(ValueError):
             nx.set_mode("mouse")
+
+
+def test_set_wifi(device):
+    nx = Controller.connect(device.host, device.port)
+    nx.set_wifi("Home Net", "hunter2hunter2")
+    assert device.wifi == ("Home Net", "hunter2hunter2")
+    with pytest.raises(NXError):
+        nx.ping()  # connection is closed after the board restarts
+
+
+def test_set_wifi_validates(device):
+    with Controller.connect(device.host, device.port) as nx:
+        with pytest.raises(ValueError):
+            nx.set_wifi("", "whatever1")
+        with pytest.raises(ValueError):
+            nx.set_wifi("net", "short")

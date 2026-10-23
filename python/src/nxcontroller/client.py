@@ -265,6 +265,16 @@ class Controller:
                 raise NXError(f"device did not come back within {timeout:.0f}s")
             time.sleep(0.5)
 
+    def set_wifi(self, ssid: str, password: str = "") -> None:
+        """Save new WiFi credentials on the board and restart it onto that network.
+
+        This closes the controller: the board leaves the current network. If it
+        can't join the new one, it opens the "nxcontroller-setup" hotspot
+        after about 30 seconds so you can fix the details from a phone.
+        """
+        self._request(p.encode_set_wifi(ssid, password), p.WifiAck)
+        self._drop_socket()
+
     def _try_reconnect(self, name: str) -> socket.socket | None:
         try:
             sock = socket.create_connection(self._address, timeout=2.0)

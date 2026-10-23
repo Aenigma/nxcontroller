@@ -38,6 +38,7 @@ Every message, in both directions, has the same shape:
 | `0x01` | HELLO        | `proto_version: u8`                                      |
 | `0x02` | PING         | `seq: u32`                                               |
 | `0x03` | SET_MODE     | `mode: u8` (`1` gamepad, `2` keyboard, `3` both)         |
+| `0x04` | SET_WIFI     | `ssid_len: u8, ssid: utf8[ssid_len], password: utf8[..]` |
 | `0x10` | GAMEPAD      | `buttons: u16, hat: u8, lx: u8, ly: u8, rx: u8, ry: u8`  |
 | `0x11` | KEYBOARD     | `modifiers: u8, keys: [u8; 6]`                           |
 | `0x1F` | RELEASE_ALL  | *(empty)*                                                |
@@ -56,6 +57,7 @@ check that the link is up.
 | `0x81` | HELLO_ACK  | `proto_version: u8, features: u8, name: utf8[..]`             |
 | `0x82` | PONG       | `seq: u32, usb_configured: u8`                                |
 | `0x83` | MODE_ACK   | `mode: u8, restarting: u8`                                    |
+| `0x84` | WIFI_ACK   | *(empty)*                                                     |
 | `0x8F` | ERROR      | `code: u8`                                                    |
 
 `features` bit flags: `0x01` gamepad, `0x02` keyboard. These reflect the
@@ -83,6 +85,18 @@ mode actually changes, the device replies `MODE_ACK` with `restarting = 1`,
 closes the connection and reboots (a few seconds, including rejoining WiFi). The
 USB host sees the old device unplug and the new one plug in. If the requested
 mode is already active, it replies `restarting = 0` and nothing happens.
+
+## WiFi setup
+
+`SET_WIFI` saves new credentials (SSID 1–32 bytes, password empty or 8–64
+bytes), replies `WIFI_ACK`, closes the connection and reboots onto that network.
+
+A board with no saved credentials, or one that fails to join its network
+3 times in a row, opens the open hotspot `nxcontroller-setup` at
+`192.168.4.1`. It keeps retrying its network in the meantime. The hotspot serves a
+form over HTTP, with DHCP and a catch-all DNS so phones show it as a captive
+portal. Saving the form stores the credentials and reboots. Saved credentials take
+precedence over any compiled in from `firmware/.env`.
 
 ## Gamepad values (Switch / HORIPAD layout)
 

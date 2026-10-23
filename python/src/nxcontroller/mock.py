@@ -38,6 +38,7 @@ class MockDevice:
         self.keyboard = keyboard
         self.verbose = verbose
         self._restart = False
+        self.wifi: tuple[str, str] | None = None
         device = self
 
         class Handler(socketserver.BaseRequestHandler):
@@ -99,6 +100,11 @@ class MockDevice:
             if self.verbose:
                 print(f"mode -> {p.MODE_NAMES[payload[0]]} (restarting)")
             return p.frame(p.MSG_MODE_ACK, payload + b"\x01")
+        if msg_type == p.MSG_SET_WIFI and payload:
+            ssid_len = payload[0]
+            self.wifi = (payload[1 : 1 + ssid_len].decode(), payload[1 + ssid_len :].decode())
+            self._restart = True
+            return p.frame(p.MSG_WIFI_ACK)
         if msg_type == p.MSG_PING and len(payload) == 4:
             return p.frame(p.MSG_PONG, payload + b"\x01")
         if msg_type == p.MSG_GAMEPAD and len(payload) == 7:
@@ -119,7 +125,7 @@ class MockDevice:
         if msg_type == p.MSG_RELEASE_ALL and not payload:
             self._release_all()
             return None
-        known = {p.MSG_HELLO, p.MSG_PING, p.MSG_SET_MODE, p.MSG_GAMEPAD, p.MSG_KEYBOARD, p.MSG_RELEASE_ALL}
+        known = {p.MSG_HELLO, p.MSG_PING, p.MSG_SET_MODE, p.MSG_SET_WIFI, p.MSG_GAMEPAD, p.MSG_KEYBOARD, p.MSG_RELEASE_ALL}
         return p.frame(p.MSG_ERROR, b"\x02" if msg_type in known else b"\x01")
 
     def _release_all(self) -> None:

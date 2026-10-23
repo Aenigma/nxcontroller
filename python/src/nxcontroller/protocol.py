@@ -16,6 +16,7 @@ DISCOVER_REPLY_MAGIC = b"NXC!"
 MSG_HELLO = 0x01
 MSG_PING = 0x02
 MSG_SET_MODE = 0x03
+MSG_SET_WIFI = 0x04
 MSG_GAMEPAD = 0x10
 MSG_KEYBOARD = 0x11
 MSG_RELEASE_ALL = 0x1F
@@ -24,6 +25,7 @@ MSG_RELEASE_ALL = 0x1F
 MSG_HELLO_ACK = 0x81
 MSG_PONG = 0x82
 MSG_MODE_ACK = 0x83
+MSG_WIFI_ACK = 0x84
 MSG_ERROR = 0x8F
 
 FEATURE_GAMEPAD = 0x01
@@ -59,6 +61,15 @@ def encode_ping(seq: int) -> bytes:
 
 def encode_set_mode(mode: int) -> bytes:
     return frame(MSG_SET_MODE, bytes((mode,)))
+
+
+def encode_set_wifi(ssid: str, password: str) -> bytes:
+    s, pw = ssid.encode(), password.encode()
+    if not 1 <= len(s) <= 32:
+        raise ValueError("WiFi network name must be 1-32 bytes")
+    if pw and not 8 <= len(pw) <= 64:
+        raise ValueError("WiFi password must be 8-64 bytes (or empty for an open network)")
+    return frame(MSG_SET_WIFI, bytes((len(s),)) + s + pw)
 
 
 def encode_gamepad(buttons: int, hat: int, lx: int, ly: int, rx: int, ry: int) -> bytes:
@@ -108,6 +119,11 @@ class ModeAck:
 
 
 @dataclass(frozen=True)
+class WifiAck:
+    pass
+
+
+@dataclass(frozen=True)
 class DeviceError:
     code: int
 
@@ -116,7 +132,7 @@ class DeviceError:
         return ERROR_NAMES.get(self.code, f"error {self.code}")
 
 
-Message = HelloAck | Pong | ModeAck | DeviceError
+Message = HelloAck | Pong | ModeAck | WifiAck | DeviceError
 
 
 def decode(msg_type: int, payload: bytes) -> Message:
@@ -127,6 +143,8 @@ def decode(msg_type: int, payload: bytes) -> Message:
         return Pong(seq, bool(usb))
     if msg_type == MSG_MODE_ACK and len(payload) == 2:
         return ModeAck(payload[0], bool(payload[1]))
+    if msg_type == MSG_WIFI_ACK and not payload:
+        return WifiAck()
     if msg_type == MSG_ERROR and len(payload) == 1:
         return DeviceError(payload[0])
     raise ValueError(f"unexpected message 0x{msg_type:02x} ({len(payload)} bytes)")

@@ -21,9 +21,9 @@ load_firmware_env() {
     . "$FIRMWARE_DIR/.env"
     set +a
   fi
-  if [ -z "${WIFI_SSID:-}" ] || [ -z "${WIFI_PASSWORD+x}" ]; then
-    echo "WIFI_SSID / WIFI_PASSWORD not set. Copy firmware/.env.example to firmware/.env and fill it in." >&2
-    exit 1
+  if [ -z "${WIFI_SSID:-}" ]; then
+    echo "note: no WIFI_SSID in firmware/.env; the board will start the 'nxcontroller-setup' hotspot" >&2
+    echo "      unless it already has WiFi saved (set it there, or with \`nxc wifi\`)." >&2
   fi
 }
 
