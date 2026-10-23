@@ -1545,6 +1545,7 @@ dependencies = [
  "esp-println",
  "esp-radio",
  "esp-rtos",
+ "esp-storage",
  "log",
  "smoltcp 0.14.0",
  "static_cell",

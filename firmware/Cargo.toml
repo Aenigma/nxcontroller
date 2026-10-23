@@ -20,6 +20,10 @@ esp-rtos = { version = "0.4.0", features = [
 ] }
 
 esp-bootloader-esp-idf = { version = "0.6.0", features = ["esp32s3", "log-04"] }
+# Flash writes (saved settings) must run with interrupts off: while the flash is
+# busy, any interrupt handler that lives in flash would freeze the chip.
+# esp-bootloader-esp-idf pulls esp-storage in with default features disabled.
+esp-storage = { version = "0.10.0", features = ["esp32s3", "critical-section"] }
 log                    = "0.4.27"
 
 embassy-net = { version = "0.9.1", features = [
