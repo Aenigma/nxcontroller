@@ -1,0 +1,10 @@
+.DS_Store
+# firmware
+firmware/target/
+firmware/.env
+# python
+python/.venv/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+dist/

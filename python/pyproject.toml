@@ -1,0 +1,17 @@
+[project]
+name = "nxcontroller"
+version = "0.1.0"
+description = "Python client for the nxcontroller ESP32-S3 WiFi controller firmware"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+nxc = "nxcontroller.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
