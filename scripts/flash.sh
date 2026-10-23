@@ -3,8 +3,6 @@
 #
 #   scripts/flash.sh                       # build, flash, monitor
 #   scripts/flash.sh --no-monitor
-#   scripts/flash.sh --gamepad-only        # USB gamepad only
-#   scripts/flash.sh --keyboard-only       # USB keyboard only
 #   scripts/flash.sh -p PORT               # flash through PORT with espflash's own reset logic
 #   scripts/flash.sh --monitor-port PORT   # where the UART log lives (default: auto)
 #
@@ -25,9 +23,9 @@ while [ $# -gt 0 ]; do
     -p|--port) flash_port="$2"; shift 2 ;;
     --monitor-port) monitor_port="$2"; shift 2 ;;
     --no-monitor) monitor=0; shift ;;
-    --gamepad-only) cargo_args+=(--no-default-features --features gamepad); shift ;;
-    --keyboard-only) cargo_args+=(--no-default-features --features keyboard); shift ;;
-    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
+    --gamepad-only|--keyboard-only)
+      echo "$1 is gone: the USB mode is now chosen at runtime, e.g. \`nxc mode keyboard\`" >&2; exit 2 ;;
+    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
     *) cargo_args+=("$1"); shift ;;
   esac
 done

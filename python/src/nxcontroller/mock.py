@@ -37,6 +37,7 @@ class MockDevice:
         self.gamepad = gamepad
         self.keyboard = keyboard
         self.verbose = verbose
+        self._restart = False
         device = self
 
         class Handler(socketserver.BaseRequestHandler):
@@ -72,6 +73,11 @@ class MockDevice:
                 reply = self._handle(msg_type, payload)
                 if reply:
                     conn.sendall(reply)
+                if self._restart:  # simulate the reboot after a mode change
+                    self._restart = False
+                    conn.close()
+                    self._release_all()
+                    return
         self._release_all()
 
     def _handle(self, msg_type: int, payload: bytes) -> bytes | None:
@@ -82,6 +88,17 @@ class MockDevice:
                 return p.frame(p.MSG_ERROR, b"\x04")
             features = (p.FEATURE_GAMEPAD if self.gamepad else 0) | (p.FEATURE_KEYBOARD if self.keyboard else 0)
             return p.frame(p.MSG_HELLO_ACK, bytes((p.PROTOCOL_VERSION, features)) + b"mock")
+        if msg_type == p.MSG_SET_MODE and len(payload) == 1:
+            if payload[0] not in p.MODE_NAMES:
+                return p.frame(p.MSG_ERROR, b"\x05")
+            new = (payload[0] & 1 == 1, payload[0] & 2 == 2)
+            if new == (self.gamepad, self.keyboard):
+                return p.frame(p.MSG_MODE_ACK, payload + b"\x00")
+            self.gamepad, self.keyboard = new
+            self._restart = True
+            if self.verbose:
+                print(f"mode -> {p.MODE_NAMES[payload[0]]} (restarting)")
+            return p.frame(p.MSG_MODE_ACK, payload + b"\x01")
         if msg_type == p.MSG_PING and len(payload) == 4:
             return p.frame(p.MSG_PONG, payload + b"\x01")
         if msg_type == p.MSG_GAMEPAD and len(payload) == 7:
@@ -102,7 +119,7 @@ class MockDevice:
         if msg_type == p.MSG_RELEASE_ALL and not payload:
             self._release_all()
             return None
-        known = {p.MSG_HELLO, p.MSG_PING, p.MSG_GAMEPAD, p.MSG_KEYBOARD, p.MSG_RELEASE_ALL}
+        known = {p.MSG_HELLO, p.MSG_PING, p.MSG_SET_MODE, p.MSG_GAMEPAD, p.MSG_KEYBOARD, p.MSG_RELEASE_ALL}
         return p.frame(p.MSG_ERROR, b"\x02" if msg_type in known else b"\x01")
 
     def _release_all(self) -> None:

@@ -81,10 +81,3 @@ debug         = 2     # prefer slower builds but better debugging experience
 lto           = 'fat'
 opt-level     = 's'
 
-[features]
-default = ["gamepad", "keyboard"]
-# Switch-compatible HORIPAD-style gamepad.
-gamepad = []
-# USB boot keyboard. With both enabled the device is a composite gamepad+keyboard.
-# scripts/flash.sh --gamepad-only / --keyboard-only build just one of them.
-keyboard = []

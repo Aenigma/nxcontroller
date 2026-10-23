@@ -37,6 +37,7 @@ Every message, in both directions, has the same shape:
 |--------|--------------|----------------------------------------------------------|
 | `0x01` | HELLO        | `proto_version: u8`                                      |
 | `0x02` | PING         | `seq: u32`                                               |
+| `0x03` | SET_MODE     | `mode: u8` (`1` gamepad, `2` keyboard, `3` both)         |
 | `0x10` | GAMEPAD      | `buttons: u16, hat: u8, lx: u8, ly: u8, rx: u8, ry: u8`  |
 | `0x11` | KEYBOARD     | `modifiers: u8, keys: [u8; 6]`                           |
 | `0x1F` | RELEASE_ALL  | *(empty)*                                                |
@@ -54,15 +55,34 @@ check that the link is up.
 |--------|------------|---------------------------------------------------------------|
 | `0x81` | HELLO_ACK  | `proto_version: u8, features: u8, name: utf8[..]`             |
 | `0x82` | PONG       | `seq: u32, usb_configured: u8`                                |
+| `0x83` | MODE_ACK   | `mode: u8, restarting: u8`                                    |
 | `0x8F` | ERROR      | `code: u8`                                                    |
 
-`features` bit flags: `0x01` gamepad, `0x02` keyboard.
+`features` bit flags: `0x01` gamepad, `0x02` keyboard. These reflect the
+current USB mode, and mode values use the same bits.
 
 `usb_configured` is `1` once the USB host (Switch or PC) has enumerated the device.
 
 Error codes: `1` unknown message type, `2` bad payload length,
-`3` unsupported (for example a keyboard message when the firmware was built
-without the keyboard), `4` protocol version mismatch.
+`3` not available in the current USB mode (for example a keyboard message in
+gamepad mode), `4` protocol version mismatch, `5` invalid value,
+`6` failed to save a setting.
+
+## USB mode
+
+The board presents one of three USB devices:
+
+| Mode | Value | USB device | Identity |
+|------|-------|------------|----------|
+| gamepad  | `1` | Switch-compatible pad | HORI Pokken `0F0D:0092` |
+| keyboard | `2` | boot keyboard         | pid.codes test `1209:0001` |
+| both     | `3` | composite pad + keyboard (default) | HORI Pokken `0F0D:0092` |
+
+`SET_MODE` saves the mode to flash, so it survives power cycles. If the
+mode actually changes, the device replies `MODE_ACK` with `restarting = 1`,
+closes the connection and reboots (a few seconds, including rejoining WiFi). The
+USB host sees the old device unplug and the new one plug in. If the requested
+mode is already active, it replies `restarting = 0` and nothing happens.
 
 ## Gamepad values (Switch / HORIPAD layout)
 

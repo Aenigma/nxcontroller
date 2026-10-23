@@ -9,7 +9,8 @@ use esp_radio::wifi::{Interface, WifiController};
 use log::{info, warn};
 
 use crate::config::DEVICE_NAME;
-use crate::protocol::{self, Command, error, feature, msg};
+use crate::protocol::{self, Command, error, msg};
+use crate::settings::{Mode, Settings};
 use crate::usb;
 
 #[embassy_executor::task]
@@ -34,7 +35,7 @@ pub async fn net_task(mut runner: Runner<'static, Interface>) -> ! {
 }
 
 #[embassy_executor::task]
-pub async fn control_server_task(stack: Stack<'static>) {
+pub async fn control_server_task(stack: Stack<'static>, mut settings: Settings) {
     let mut rx_buf = [0u8; 1024];
     let mut tx_buf = [0u8; 512];
 
@@ -63,39 +64,43 @@ pub async fn control_server_task(stack: Stack<'static>) {
         }
         info!("client connected from {:?}", socket.remote_endpoint());
 
-        serve(&mut socket).await;
+        let restart = serve(&mut socket, &mut settings).await;
 
         usb::release_all();
+        if restart {
+            // Let the MODE_ACK reach the client, then reboot into the new mode.
+            socket.close();
+            let _ = socket.flush().await;
+            Timer::after(Duration::from_millis(300)).await;
+            info!("restarting into {:?} mode", settings.mode());
+            esp_hal::system::software_reset();
+        }
         socket.abort();
         let _ = socket.flush().await;
         info!("client disconnected, inputs released");
     }
 }
 
-async fn serve(socket: &mut TcpSocket<'_>) {
+/// Handle one client. Returns true if the device should restart (mode change).
+async fn serve(socket: &mut TcpSocket<'_>, settings: &mut Settings) -> bool {
     let mut header = [0u8; 2];
     let mut payload = [0u8; 255];
     let mut out = [0u8; 64];
 
     loop {
         if socket.read_exact(&mut header).await.is_err() {
-            return;
+            return false;
         }
         let len = header[1] as usize;
         if socket.read_exact(&mut payload[..len]).await.is_err() {
-            return;
+            return false;
         }
+        let mut restart = false;
 
         let reply = match protocol::parse(header[0], &payload[..len]) {
             Ok(Command::Hello { version }) if version == protocol::PROTOCOL_VERSION => {
                 let mut body = [0u8; 34];
-                let mut features = 0;
-                if usb::GAMEPAD_ENABLED {
-                    features |= feature::GAMEPAD;
-                }
-                if usb::KEYBOARD_ENABLED {
-                    features |= feature::KEYBOARD;
-                }
+                let features = usb::mode() as u8; // mode values are the feature bits
                 let name = &DEVICE_NAME.as_bytes()[..DEVICE_NAME.len().min(32)];
                 body[0] = protocol::PROTOCOL_VERSION;
                 body[1] = features;
@@ -116,11 +121,32 @@ async fn serve(socket: &mut TcpSocket<'_>) {
                 let body = [s[0], s[1], s[2], s[3], usb::is_configured() as u8];
                 Some(protocol::frame(&mut out, msg::PONG, &body))
             }
-            Ok(Command::Gamepad(report)) if usb::GAMEPAD_ENABLED => {
+            Ok(Command::SetMode { mode }) => match Mode::from_u8(mode) {
+                None => Some(protocol::frame(
+                    &mut out,
+                    msg::ERROR,
+                    &[error::INVALID_VALUE],
+                )),
+                Some(new) if new == usb::mode() => {
+                    Some(protocol::frame(&mut out, msg::MODE_ACK, &[mode, 0]))
+                }
+                Some(new) => match settings.set_mode(new) {
+                    Ok(()) => {
+                        info!("mode set to {new:?}");
+                        restart = true;
+                        Some(protocol::frame(&mut out, msg::MODE_ACK, &[mode, 1]))
+                    }
+                    Err(e) => {
+                        warn!("saving mode failed: {e:?}");
+                        Some(protocol::frame(&mut out, msg::ERROR, &[error::STORAGE]))
+                    }
+                },
+            },
+            Ok(Command::Gamepad(report)) if usb::mode().has_gamepad() => {
                 usb::submit_gamepad(report);
                 None
             }
-            Ok(Command::Keyboard(report)) if usb::KEYBOARD_ENABLED => {
+            Ok(Command::Keyboard(report)) if usb::mode().has_keyboard() => {
                 usb::submit_keyboard(report);
                 None
             }
@@ -137,7 +163,10 @@ async fn serve(socket: &mut TcpSocket<'_>) {
         if let Some(reply) = reply
             && (socket.write_all(reply).await.is_err() || socket.flush().await.is_err())
         {
-            return;
+            return restart;
+        }
+        if restart {
+            return true;
         }
     }
 }

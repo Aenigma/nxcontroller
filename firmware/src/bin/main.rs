@@ -10,6 +10,7 @@
 use embassy_executor::Spawner;
 use embassy_net::StackResources;
 use esp_backtrace as _;
+use esp_bootloader_esp_idf::partitions::FlashStorage;
 use esp_hal::clock::CpuClock;
 use esp_hal::rng::Rng;
 use esp_hal::timer::timg::TimerGroup;
@@ -21,6 +22,7 @@ use esp_radio::wifi::{
 };
 use log::info;
 use nxcontroller_firmware::config::{DEVICE_NAME, WIFI_PASSWORD, WIFI_SSID};
+use nxcontroller_firmware::settings::Settings;
 use nxcontroller_firmware::{net, usb};
 use static_cell::StaticCell;
 
@@ -59,7 +61,10 @@ async fn main(spawner: Spawner) -> ! {
         EP_OUT_BUFFER.init([0; 1024]),
         embassy_usb_device::Config::default(),
     );
-    let parts = usb::build(driver);
+    let mut settings = Settings::new(FlashStorage::new(peripherals.FLASH));
+    let mode = settings.mode();
+    info!("USB mode: {mode:?}");
+    let parts = usb::build(driver, mode);
     spawner.spawn(usb::usb_device_task(parts.device).unwrap());
     if let Some(gamepad) = parts.gamepad {
         spawner.spawn(usb::gamepad_task(gamepad).unwrap());
@@ -102,7 +107,7 @@ async fn main(spawner: Spawner) -> ! {
 
     spawner.spawn(net::wifi_task(controller).unwrap());
     spawner.spawn(net::net_task(runner).unwrap());
-    spawner.spawn(net::control_server_task(stack).unwrap());
+    spawner.spawn(net::control_server_task(stack, settings).unwrap());
     spawner.spawn(net::discovery_task(stack).unwrap());
 
     loop {

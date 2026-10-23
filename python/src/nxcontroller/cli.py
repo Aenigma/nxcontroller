@@ -25,6 +25,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("discover", help="list devices on the network")
     ping = sub.add_parser("ping", help="measure latency and USB state")
     ping.add_argument("-n", type=int, default=5)
+    mode = sub.add_parser("mode", help="show or set the USB mode, e.g. `nxc mode keyboard`")
+    mode.add_argument("mode", nargs="?", choices=list(p.MODES))
     tap = sub.add_parser("tap", help="tap one or more buttons together, e.g. `nxc tap A`")
     tap.add_argument("buttons", nargs="+")
     tap.add_argument("--duration", type=float, default=0.1)
@@ -71,7 +73,17 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         with _connect(args) as nx:
-            if args.cmd == "ping":
+            if args.cmd == "mode":
+                if args.mode is None:
+                    print(nx.mode)
+                elif args.mode == nx.mode:
+                    print(f"already in {nx.mode} mode")
+                else:
+                    print(f"switching {nx.mode} -> {args.mode}, waiting for the board to restart...")
+                    nx.set_mode(args.mode)
+                    _, usb = nx.ping()
+                    print(f"now in {nx.mode} mode (usb {'configured' if usb else 'not connected yet'})")
+            elif args.cmd == "ping":
                 print(f"connected to {nx.info.name!r} (protocol v{nx.info.proto_version})")
                 for _ in range(args.n):
                     latency, usb = nx.ping()

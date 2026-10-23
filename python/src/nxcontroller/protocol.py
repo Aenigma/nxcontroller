@@ -15,6 +15,7 @@ DISCOVER_REPLY_MAGIC = b"NXC!"
 # Client -> device
 MSG_HELLO = 0x01
 MSG_PING = 0x02
+MSG_SET_MODE = 0x03
 MSG_GAMEPAD = 0x10
 MSG_KEYBOARD = 0x11
 MSG_RELEASE_ALL = 0x1F
@@ -22,16 +23,23 @@ MSG_RELEASE_ALL = 0x1F
 # Device -> client
 MSG_HELLO_ACK = 0x81
 MSG_PONG = 0x82
+MSG_MODE_ACK = 0x83
 MSG_ERROR = 0x8F
 
 FEATURE_GAMEPAD = 0x01
 FEATURE_KEYBOARD = 0x02
 
+# USB modes. The values are the feature bits the device ends up with.
+MODES = {"gamepad": 0x01, "keyboard": 0x02, "both": 0x03}
+MODE_NAMES = {v: k for k, v in MODES.items()}
+
 ERROR_NAMES = {
     1: "unknown message type",
     2: "bad payload length",
-    3: "unsupported by this firmware build",
+    3: "not available in the current USB mode",
     4: "protocol version mismatch",
+    5: "invalid value",
+    6: "failed to save setting on the device",
 }
 
 
@@ -47,6 +55,10 @@ def encode_hello() -> bytes:
 
 def encode_ping(seq: int) -> bytes:
     return frame(MSG_PING, struct.pack("<I", seq & 0xFFFFFFFF))
+
+
+def encode_set_mode(mode: int) -> bytes:
+    return frame(MSG_SET_MODE, bytes((mode,)))
 
 
 def encode_gamepad(buttons: int, hat: int, lx: int, ly: int, rx: int, ry: int) -> bytes:
@@ -78,11 +90,21 @@ class HelloAck:
     def has_keyboard(self) -> bool:
         return bool(self.features & FEATURE_KEYBOARD)
 
+    @property
+    def mode(self) -> str:
+        return MODE_NAMES.get(self.features, f"unknown ({self.features})")
+
 
 @dataclass(frozen=True)
 class Pong:
     seq: int
     usb_configured: bool
+
+
+@dataclass(frozen=True)
+class ModeAck:
+    mode: int
+    restarting: bool
 
 
 @dataclass(frozen=True)
@@ -94,7 +116,7 @@ class DeviceError:
         return ERROR_NAMES.get(self.code, f"error {self.code}")
 
 
-Message = HelloAck | Pong | DeviceError
+Message = HelloAck | Pong | ModeAck | DeviceError
 
 
 def decode(msg_type: int, payload: bytes) -> Message:
@@ -103,6 +125,8 @@ def decode(msg_type: int, payload: bytes) -> Message:
     if msg_type == MSG_PONG and len(payload) == 5:
         seq, usb = struct.unpack("<IB", payload)
         return Pong(seq, bool(usb))
+    if msg_type == MSG_MODE_ACK and len(payload) == 2:
+        return ModeAck(payload[0], bool(payload[1]))
     if msg_type == MSG_ERROR and len(payload) == 1:
         return DeviceError(payload[0])
     raise ValueError(f"unexpected message 0x{msg_type:02x} ({len(payload)} bytes)")

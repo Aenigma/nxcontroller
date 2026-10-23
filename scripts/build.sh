@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-# Build the firmware (release). Extra args go to cargo, e.g.:
-#   scripts/build.sh --no-default-features --features gamepad    # gamepad only
-#   scripts/build.sh --no-default-features --features keyboard   # keyboard only
+# Build the firmware (release). Extra args go to cargo.
 set -euo pipefail
 . "$(dirname "$0")/_env.sh"
 load_firmware_env

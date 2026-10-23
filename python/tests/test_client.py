@@ -98,3 +98,24 @@ def test_gamepad_unsupported_keyboard_only():
             wait_for(lambda: dev.state.keys[0] == 0)
     finally:
         dev.stop()
+
+
+def test_set_mode_reconnects(device):
+    with Controller.connect(device.host, device.port) as nx:
+        assert nx.mode == "both"
+        nx.set_mode("keyboard", timeout=5)
+        assert nx.mode == "keyboard"
+        assert (device.gamepad, device.keyboard) == (False, True)
+        with pytest.raises(NXError):
+            nx.tap("A")
+        nx.key_tap("a")
+        nx.set_mode("keyboard")  # no-op, no restart
+        nx.set_mode("both", timeout=5)
+        nx.tap("A")
+        wait_for(lambda: device.state.buttons == 0)
+
+
+def test_set_mode_rejects_unknown(device):
+    with Controller.connect(device.host, device.port) as nx:
+        with pytest.raises(ValueError):
+            nx.set_mode("mouse")

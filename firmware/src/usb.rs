@@ -1,10 +1,11 @@
 //! USB HID side: a Switch-compatible wired gamepad (HORIPAD-style descriptor,
-//! which the Switch accepts without any handshake) plus an optional boot keyboard.
+//! which the Switch accepts without any handshake) and/or a boot keyboard,
+//! depending on the runtime [`Mode`].
 //!
 //! Network tasks push reports into the channels below; the USB tasks forward
 //! them to the host in order, so short taps are never coalesced away.
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use embassy_futures::join::join;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -16,13 +17,16 @@ use esp_hal::usb::otg::embassy_usb_device::Driver;
 use log::{info, warn};
 use static_cell::StaticCell;
 
+use crate::settings::Mode;
+
 pub type UsbDriver = Driver<'static>;
 
-pub const GAMEPAD_ENABLED: bool = cfg!(feature = "gamepad");
-pub const KEYBOARD_ENABLED: bool = cfg!(feature = "keyboard");
+static MODE: AtomicU8 = AtomicU8::new(Mode::DEFAULT as u8);
 
-#[cfg(not(any(feature = "gamepad", feature = "keyboard")))]
-compile_error!("enable at least one of the `gamepad` / `keyboard` features");
+/// The mode the USB device was built with at boot.
+pub fn mode() -> Mode {
+    Mode::from_u8(MODE.load(Ordering::Relaxed)).unwrap_or(Mode::DEFAULT)
+}
 
 struct Identity {
     vid: u16,
@@ -42,7 +46,7 @@ const GAMEPAD_IDENTITY: Identity = Identity {
     release: 0x0572,
 };
 
-// Keyboard-only builds are a plain HID keyboard, which needs no special identity.
+// Keyboard-only mode is a plain HID keyboard, which needs no special identity.
 // 1209:0001 is the pid.codes test PID, fine for personal use.
 const KEYBOARD_IDENTITY: Identity = Identity {
     vid: 0x1209,
@@ -123,11 +127,11 @@ pub fn submit_keyboard(report: KeyboardReport) {
 
 /// Drop anything queued and return every input to neutral.
 pub fn release_all() {
-    if GAMEPAD_ENABLED {
+    if mode().has_gamepad() {
         GAMEPAD_REPORTS.clear();
         submit_gamepad(GamepadReport::NEUTRAL);
     }
-    if KEYBOARD_ENABLED {
+    if mode().has_keyboard() {
         KEYBOARD_REPORTS.clear();
         submit_keyboard(KeyboardReport::EMPTY);
     }
@@ -243,8 +247,9 @@ pub struct UsbParts {
     pub keyboard: Option<HidReaderWriter<'static, UsbDriver, 1, 8>>,
 }
 
-pub fn build(driver: UsbDriver) -> UsbParts {
-    let id = if GAMEPAD_ENABLED {
+pub fn build(driver: UsbDriver, mode: Mode) -> UsbParts {
+    MODE.store(mode as u8, Ordering::Relaxed);
+    let id = if mode.has_gamepad() {
         GAMEPAD_IDENTITY
     } else {
         KEYBOARD_IDENTITY
@@ -279,7 +284,7 @@ pub fn build(driver: UsbDriver) -> UsbParts {
     );
     builder.handler(DEVICE_STATE.init(DeviceState));
 
-    let gamepad = GAMEPAD_ENABLED.then(|| {
+    let gamepad = mode.has_gamepad().then(|| {
         HidReaderWriter::new(
             &mut builder,
             GAMEPAD_STATE.init(hid::State::new()),
@@ -294,7 +299,7 @@ pub fn build(driver: UsbDriver) -> UsbParts {
         )
     });
 
-    let keyboard = KEYBOARD_ENABLED.then(|| {
+    let keyboard = mode.has_keyboard().then(|| {
         HidReaderWriter::new(
             &mut builder,
             KEYBOARD_STATE.init(hid::State::new()),

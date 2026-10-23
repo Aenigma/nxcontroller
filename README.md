@@ -95,17 +95,25 @@ cd python && uv run nxc --host 127.0.0.1 ping
 
 - WiFi credentials are baked in at compile time from `firmware/.env`, which is
   gitignored. Build through the scripts so the file gets loaded.
-- Three build variants, picked with Cargo features (`gamepad`, `keyboard`; both by default):
+- **USB mode** is chosen at runtime over WiFi and saved on the board:
 
-  | Command                            | USB device                    | Identity                    |
-  |------------------------------------|-------------------------------|-----------------------------|
-  | `scripts/flash.sh`                 | gamepad + keyboard (composite)| HORI Pokken `0F0D:0092`     |
-  | `scripts/flash.sh --gamepad-only`  | gamepad                       | HORI Pokken `0F0D:0092`     |
-  | `scripts/flash.sh --keyboard-only` | keyboard                      | pid.codes test `1209:0001`  |
+  | Mode       | USB device                     | Identity                    |
+  |------------|--------------------------------|-----------------------------|
+  | `both`     | gamepad + keyboard (default)   | HORI Pokken `0F0D:0092`     |
+  | `gamepad`  | gamepad                        | HORI Pokken `0F0D:0092`     |
+  | `keyboard` | keyboard                       | pid.codes test `1209:0001`  |
 
+  ```bash
+  uv run nxc mode keyboard   # board restarts as a keyboard (~3-5 s), the client reconnects
+  ```
+  ```python
+  nx.set_mode("gamepad")
+  ```
   The HORI identity is the standard way to get a Switch to accept a custom wired
-  pad without a handshake. Keyboard-only builds are a plain HID keyboard. The
-  firmware reports what it supports in its HELLO reply (`nx.info.has_gamepad` /
-  `has_keyboard`). Calling an unsupported input type raises `NXError`.
+  pad without a handshake. Keyboard mode is a plain HID keyboard. If your host
+  ignores the keyboard half of `both` (a Switch 2 did in our testing), use `keyboard` mode.
+  On a Switch, register the pad by pressing L+R on *Controllers → Change Grip/Order*
+  (`nxc tap L R --duration 0.5`). Calling an input type the current mode
+  lacks raises `NXError`.
 - WiFi power saving is disabled for latency.
 - Toolchain: `rust-toolchain.toml` pins the `esp` channel. Run `espup update` to upgrade it.

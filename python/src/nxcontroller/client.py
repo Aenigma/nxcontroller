@@ -50,26 +50,30 @@ class Controller:
     """
 
     def __init__(self, sock: socket.socket):
-        self._sock = sock
-        self._sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        self._address: tuple[str, int] = sock.getpeername()[:2]
         self._send_lock = threading.Lock()
-        self._replies: queue.Queue[p.Message] = queue.Queue()
-        self._async_error: p.DeviceError | None = None
-        self._closed = False
         self._waiting = False
         self._seq = 0
+        self._reset_state()
+        self._attach(sock)
 
+    def _reset_state(self) -> None:
         self._buttons = Button(0)
         self._hat = Hat.CENTER
         self._sticks = [STICK_CENTER] * 4  # lx, ly, rx, ry
         self._modifiers = Modifier(0)
         self._keys: list[int] = []
 
-        self._reader = threading.Thread(target=self._read_loop, daemon=True)
+    def _attach(self, sock: socket.socket) -> None:
+        """Start using `sock` as the device connection and say hello."""
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        self._sock = sock
+        self._replies: queue.Queue[p.Message] = queue.Queue()
+        self._async_error: p.DeviceError | None = None
+        self._closed = False
+        self._reader = threading.Thread(target=self._read_loop, args=(sock, self._replies), daemon=True)
         self._reader.start()
-
-        ack = self._request(p.encode_hello(), p.HelloAck)
-        self.info: p.HelloAck = ack
+        self.info: p.HelloAck = self._request(p.encode_hello(), p.HelloAck)
 
     # ------------------------------------------------------------------ setup
 
@@ -94,8 +98,11 @@ class Controller:
             return
         try:
             self.release_all()
-        except OSError:
+        except (OSError, NXError):
             pass
+        self._drop_socket()
+
+    def _drop_socket(self) -> None:
         self._closed = True
         try:
             self._sock.shutdown(socket.SHUT_RDWR)
@@ -222,16 +229,70 @@ class Controller:
             raise NXError(f"pong sequence mismatch ({pong.seq} != {self._seq})")
         return time.perf_counter() - start, pong.usb_configured
 
+    @property
+    def mode(self) -> str:
+        """Current USB mode: "gamepad", "keyboard" or "both"."""
+        return self.info.mode
+
+    def set_mode(self, mode: str, timeout: float = 30.0) -> None:
+        """Switch what the board presents on USB: "gamepad", "keyboard" or "both".
+
+        The board saves the mode (it survives power cycles) and restarts, which
+        takes a few seconds while it rejoins WiFi. This call waits and reconnects.
+        The USB host sees the old device unplug and the new one plug in.
+        """
+        try:
+            code = p.MODES[mode.lower()]
+        except KeyError:
+            raise ValueError(f"unknown mode {mode!r}; choose from {list(p.MODES)}") from None
+        ack = self._request(p.encode_set_mode(code), p.ModeAck)
+        if not ack.restarting:
+            return  # already in that mode
+
+        name = self.info.name
+        self._drop_socket()
+        self._reset_state()
+        time.sleep(1.5)  # give it time to actually go down
+        deadline = time.monotonic() + timeout
+        while True:
+            sock = self._try_reconnect(name)
+            if sock is not None:
+                self._attach(sock)
+                if self.info.features != code:
+                    raise NXError(f"device came back in {self.mode!r} mode, expected {mode!r}")
+                return
+            if time.monotonic() > deadline:
+                raise NXError(f"device did not come back within {timeout:.0f}s")
+            time.sleep(0.5)
+
+    def _try_reconnect(self, name: str) -> socket.socket | None:
+        try:
+            sock = socket.create_connection(self._address, timeout=2.0)
+        except OSError:
+            # DHCP may have handed out a new address; look for it by name.
+            from .discovery import discover
+
+            match = next((d for d in discover(timeout=0.5) if d.name == name), None)
+            if match is None:
+                return None
+            try:
+                sock = socket.create_connection((match.host, match.port), timeout=2.0)
+            except OSError:
+                return None
+            self._address = (match.host, match.port)
+        sock.settimeout(None)
+        return sock
+
     # ----------------------------------------------------------- internals
 
     def _send_gamepad(self) -> None:
         if not self.info.has_gamepad:
-            raise NXError("this firmware build has no gamepad support")
+            raise NXError(f"gamepad is not active (device is in {self.mode!r} mode; see set_mode)")
         self._send(p.encode_gamepad(int(self._buttons), int(self._hat), *self._sticks))
 
     def _send_keyboard(self) -> None:
         if not self.info.has_keyboard:
-            raise NXError("this firmware build has no keyboard support")
+            raise NXError(f"keyboard is not active (device is in {self.mode!r} mode; see set_mode)")
         self._send(p.encode_keyboard(int(self._modifiers), self._keys))
 
     def _send(self, data: bytes) -> None:
@@ -258,11 +319,11 @@ class Controller:
             raise NXError(f"unexpected reply {reply!r}")
         return reply
 
-    def _read_loop(self) -> None:
+    def _read_loop(self, sock: socket.socket, replies: queue.Queue[p.Message]) -> None:
         buf = b""
-        while not self._closed:
+        while True:
             try:
-                chunk = self._sock.recv(256)
+                chunk = sock.recv(256)
             except OSError:
                 break
             if not chunk:
@@ -279,4 +340,4 @@ class Controller:
                     # Errors for fire-and-forget state messages surface on the next call.
                     self._async_error = msg
                 else:
-                    self._replies.put(msg)
+                    replies.put(msg)
