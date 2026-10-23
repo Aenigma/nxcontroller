@@ -11,7 +11,11 @@ use embassy_futures::join::join;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_time::{Duration, Timer, with_timeout};
-use embassy_usb::class::hid::{self, HidReaderWriter, HidSubclass, RequestHandler};
+use embassy_usb::class::hid::HidSubclass;
+use embassy_usb::class::hid::{
+    self, HidProtocolMode, HidReaderWriter, HidWriter, ReportId, RequestHandler,
+};
+use embassy_usb::control::OutResponse;
 use embassy_usb::{Builder, Handler, UsbDevice, UsbVersion};
 use esp_hal::usb::otg::embassy_usb_device::Driver;
 use log::{info, warn};
@@ -241,10 +245,54 @@ impl Handler for DeviceState {
 struct IgnoreRequests;
 impl RequestHandler for IgnoreRequests {}
 
+/// Answers the keyboard's class requests the way a real keyboard does. Hosts
+/// with simple keyboard drivers (consoles, BIOSes) switch to boot protocol and
+/// set LEDs. embassy-usb rejects both by default, which can leave the keyboard
+/// enumerated but ignored. Our reports already use the boot layout, so
+/// accepting boot protocol costs nothing.
+struct KeyboardRequests {
+    protocol: HidProtocolMode,
+    idle_ms: u32,
+}
+
+impl RequestHandler for KeyboardRequests {
+    fn get_report(&mut self, id: ReportId, buf: &mut [u8]) -> Option<usize> {
+        info!("keyboard: GET_REPORT {id:?}");
+        let empty = KeyboardReport::EMPTY.to_bytes();
+        let n = empty.len().min(buf.len());
+        buf[..n].copy_from_slice(&empty[..n]);
+        Some(n)
+    }
+
+    fn set_report(&mut self, id: ReportId, data: &[u8]) -> OutResponse {
+        info!("keyboard: SET_REPORT {id:?} {data:02x?} (LEDs)");
+        OutResponse::Accepted
+    }
+
+    fn get_protocol(&self) -> HidProtocolMode {
+        self.protocol
+    }
+
+    fn set_protocol(&mut self, protocol: HidProtocolMode) -> OutResponse {
+        info!("keyboard: SET_PROTOCOL {protocol:?}");
+        self.protocol = protocol;
+        OutResponse::Accepted
+    }
+
+    fn get_idle_ms(&mut self, _id: Option<ReportId>) -> Option<u32> {
+        Some(self.idle_ms)
+    }
+
+    fn set_idle_ms(&mut self, id: Option<ReportId>, duration_ms: u32) {
+        info!("keyboard: SET_IDLE {id:?} {duration_ms} ms");
+        self.idle_ms = duration_ms;
+    }
+}
+
 pub struct UsbParts {
     pub device: UsbDevice<'static, UsbDriver>,
     pub gamepad: Option<HidReaderWriter<'static, UsbDriver, 8, 8>>,
-    pub keyboard: Option<HidReaderWriter<'static, UsbDriver, 1, 8>>,
+    pub keyboard: Option<HidWriter<'static, UsbDriver, 8>>,
 }
 
 pub fn build(driver: UsbDriver, mode: Mode) -> UsbParts {
@@ -299,13 +347,18 @@ pub fn build(driver: UsbDriver, mode: Mode) -> UsbParts {
         )
     });
 
+    // IN endpoint only, like a real keyboard; LED output arrives via SET_REPORT.
+    static KEYBOARD_REQUESTS: StaticCell<KeyboardRequests> = StaticCell::new();
     let keyboard = mode.has_keyboard().then(|| {
-        HidReaderWriter::new(
+        HidWriter::new(
             &mut builder,
             KEYBOARD_STATE.init(hid::State::new()),
             hid::Config {
                 report_descriptor: KEYBOARD_DESCRIPTOR,
-                request_handler: None,
+                request_handler: Some(KEYBOARD_REQUESTS.init(KeyboardRequests {
+                    protocol: HidProtocolMode::Report,
+                    idle_ms: 0,
+                })),
                 poll_ms: 5,
                 max_packet_size: 8,
                 hid_subclass: HidSubclass::Boot,
@@ -353,18 +406,14 @@ pub async fn gamepad_task(hid: HidReaderWriter<'static, UsbDriver, 8, 8>) {
 }
 
 #[embassy_executor::task]
-pub async fn keyboard_task(hid: HidReaderWriter<'static, UsbDriver, 1, 8>) {
-    let (reader, mut writer) = hid.split();
-    let forward = async {
-        loop {
-            let report = KEYBOARD_REPORTS.receive().await;
-            if !is_configured() {
-                continue;
-            }
-            if let Err(e) = writer.write(&report.to_bytes()).await {
-                warn!("keyboard write failed: {e:?}");
-            }
+pub async fn keyboard_task(mut writer: HidWriter<'static, UsbDriver, 8>) {
+    loop {
+        let report = KEYBOARD_REPORTS.receive().await;
+        if !is_configured() {
+            continue;
         }
-    };
-    join(reader.run(false, &mut IgnoreRequests), forward).await;
+        if let Err(e) = writer.write(&report.to_bytes()).await {
+            warn!("keyboard write failed: {e:?}");
+        }
+    }
 }
