@@ -1,3 +1,4 @@
+#!/usr/bin/env -S uv run --script
 """Typing showcase for the nxcontroller USB keyboard.
 
 Plug the board's native USB port into the computer (or console) you want to type

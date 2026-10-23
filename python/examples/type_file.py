@@ -1,0 +1,111 @@
+#!/usr/bin/env -S uv run --script
+"""Type a text file (or stdin) out through the nxcontroller USB keyboard.
+
+    uv run python examples/type_file.py notes.txt
+    cat notes.txt | uv run python examples/type_file.py
+    pbpaste | uv run python examples/type_file.py --host 192.168.1.147 --interval 0.01
+
+Click into the target window during the countdown. Ctrl-C stops typing at once,
+and the firmware releases every key when the connection closes.
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+import time
+
+from nxcontroller import Controller, NXError
+from nxcontroller.inputs import char_to_key
+
+# Common "smart" characters mapped to what a US keyboard can type.
+REPLACEMENTS = {
+    "‘": "'", "’": "'", "“": '"', "”": '"',
+    "–": "-", "—": "--", "…": "...", " ": " ",
+}
+
+
+def typeable(ch: str) -> bool:
+    try:
+        char_to_key(ch)
+        return True
+    except ValueError:
+        return False
+
+
+def prepare(text: str, on_unknown: str, strip_indent: bool) -> str:
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = "".join(REPLACEMENTS.get(ch, ch) for ch in text)
+    if strip_indent:
+        text = "\n".join(line.lstrip(" \t") for line in text.split("\n"))
+
+    bad = [
+        (lineno, col, ch)
+        for lineno, line in enumerate(text.split("\n"), 1)
+        for col, ch in enumerate(line, 1)
+        if not typeable(ch)
+    ]
+    if bad and on_unknown == "fail":
+        for lineno, col, ch in bad[:10]:
+            print(f"  line {lineno}, col {col}: {ch!r} (U+{ord(ch):04X})", file=sys.stderr)
+        raise SystemExit(f"{len(bad)} character(s) can't be typed on a US layout (use --on-unknown skip)")
+    if bad:
+        print(f"skipping {len(bad)} untypeable character(s), e.g. {bad[0][2]!r}", file=sys.stderr)
+        text = "".join(ch for ch in text if ch == "\n" or typeable(ch))
+    return text
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("file", nargs="?", default="-", help="text file to type (default: stdin)")
+    parser.add_argument("--host", help="device IP (default: auto-discover)")
+    parser.add_argument("--interval", type=float, default=0.01, help="seconds per key press and per release")
+    parser.add_argument("--countdown", type=int, default=5, help="seconds to focus the target window")
+    parser.add_argument("--on-unknown", choices=["skip", "fail"], default="skip",
+                        help="what to do with characters a US keyboard can't type")
+    parser.add_argument("--strip-indent", action="store_true",
+                        help="drop leading whitespace per line, for editors that auto-indent")
+    args = parser.parse_args()
+
+    # Read everything up front so a pipe is drained before we start typing.
+    if args.file == "-":
+        raw = sys.stdin.read()
+    else:
+        with open(args.file, encoding="utf-8") as f:
+            raw = f.read()
+    text = prepare(raw, args.on_unknown, args.strip_indent)
+    if not text:
+        raise SystemExit("nothing to type")
+
+    seconds = len(text) * args.interval * 2
+    print(f"{len(text)} characters, about {seconds:.0f}s to type", file=sys.stderr)
+
+    try:
+        nx = Controller.connect(args.host) if args.host else Controller.discover_one()
+    except (OSError, NXError) as e:
+        raise SystemExit(f"could not connect to the board: {e}") from None
+    with nx:
+        if not nx.info.has_keyboard:
+            raise SystemExit("this firmware build has no keyboard (flash without --gamepad-only)")
+
+        for i in range(args.countdown, 0, -1):
+            print(f"focus the target window... {i} ", end="\r", file=sys.stderr, flush=True)
+            time.sleep(1)
+
+        start = time.monotonic()
+        n = 0
+        try:
+            for n, ch in enumerate(text, 1):
+                mods, key = char_to_key(ch)
+                nx.key_tap(key, modifiers=mods, duration=args.interval, gap=args.interval)
+                if n % 50 == 0 or n == len(text):
+                    print(f"typed {n}/{len(text)} ({n * 100 // len(text)}%)   ",
+                          end="\r", file=sys.stderr, flush=True)
+        except KeyboardInterrupt:
+            print(f"\nstopped after {n} characters", file=sys.stderr)
+            raise SystemExit(130) from None
+        print(f"\ndone in {time.monotonic() - start:.1f}s", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()
