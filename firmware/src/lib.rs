@@ -3,6 +3,7 @@
 #[cfg(feature = "ble")]
 pub mod ble;
 pub mod config;
+pub mod control;
 pub mod net;
 pub mod protocol;
 pub mod settings;

@@ -12,22 +12,24 @@
 //! (LE Secure Connections, Just Works: the board has no display or buttons)
 //! before it can subscribe or send input.
 //!
-//! Prototype limits (see `docs/ble-findings.md`):
-//! - Bonds live in RAM only and are forgotten on reboot.
-//! - Only HELLO, PING, GAMEPAD, KEYBOARD and RELEASE_ALL are handled here.
-//!   SET_MODE / SET_WIFI answer `ERROR unsupported`. The plan is to replace
-//!   [`handle_frame`] with the transport-agnostic handler extracted from
-//!   `net::serve()`.
-//! - No arbitration with the TCP client: both can drive the USB reports.
+//! Frames go through the same handler as TCP ([`crate::control`]), so every
+//! message works over BLE, including TYPE with TYPE_PROGRESS notifications.
+//!
+//! Limits (see `docs/ble-findings.md`):
+//! - No bonding: each connection pairs afresh (still encrypted). The board
+//!   restarts on mode/option/WiFi changes, and a bond kept only in RAM would
+//!   leave the client with stale keys it can't reconnect with.
+//! - No arbitration with the TCP client: both can drive the USB reports, and
+//!   typing progress goes to whichever transport is waiting for it.
 
 use embassy_futures::join::join;
+use embassy_futures::select::{Either, select};
 use esp_radio::ble::controller::BleConnector;
 use log::{info, warn};
 use trouble_host::prelude::*;
 
 use crate::config::DEVICE_NAME;
-use crate::protocol::{self, Command, error, msg};
-use crate::usb;
+use crate::{SharedSettings, control, restart, usb};
 
 /// `a6240001-7a84-4692-ab2b-1fe245e78947`
 pub const SERVICE_UUID: u128 = 0xa6240001_7a84_4692_ab2b_1fe245e78947;
@@ -65,7 +67,7 @@ struct ControlService {
 
 /// Runs the BLE host: advertises, accepts one central at a time and serves it.
 #[embassy_executor::task]
-pub async fn ble_task(connector: BleConnector<'static>) {
+pub async fn ble_task(connector: BleConnector<'static>, settings: SharedSettings) {
     let controller: ExternalController<_, HCI_SLOTS> = ExternalController::new(connector);
     let mut resources: HostResources<_, DefaultPacketPool, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX> =
         HostResources::new();
@@ -93,8 +95,12 @@ pub async fn ble_task(connector: BleConnector<'static>) {
         loop {
             match advertise(name, &mut peripheral, &server).await {
                 Ok(conn) => {
-                    serve(&conn, &server).await;
+                    let needs_restart = serve(&conn, &server, settings).await;
                     usb::release_all();
+                    if needs_restart {
+                        info!("BLE: restarting to apply new settings");
+                        restart().await;
+                    }
                     info!("BLE: client disconnected, inputs released");
                 }
                 Err(e) => warn!("BLE: advertising failed: {e:?}"),
@@ -154,10 +160,15 @@ async fn advertise<'values, 'server, C: Controller>(
     Ok(conn)
 }
 
-/// Serves one central until it disconnects.
-async fn serve(conn: &GattConnection<'_, '_, DefaultPacketPool>, server: &Server<'_>) {
-    // Bonding needs both sides bondable. The bond is only kept in RAM for now.
-    if let Err(e) = conn.raw().set_bondable(true) {
+/// Serves one central until it disconnects. Returns true if the board should
+/// restart (settings changed; the reply has already been sent).
+async fn serve(
+    conn: &GattConnection<'_, '_, DefaultPacketPool>,
+    server: &Server<'_>,
+    settings: SharedSettings,
+) -> bool {
+    // Pair, but don't bond: see the module docs.
+    if let Err(e) = conn.raw().set_bondable(false) {
         warn!("BLE: set_bondable failed: {e:?}");
     }
     // Ask the central to pair right away, rather than waiting for its first
@@ -168,20 +179,27 @@ async fn serve(conn: &GattConnection<'_, '_, DefaultPacketPool>, server: &Server
 
     let mut frames = FrameAssembler::new();
     let mut write = [0u8; MAX_ATT_PAYLOAD];
+    let mut out = [0u8; control::REPLY_MAX];
+    let mut progress = [0u8; 8];
     loop {
-        let len = match conn.next().await {
+        // Wait for the client, forwarding typing progress in the meantime.
+        let event = match select(conn.next(), control::progress(&mut progress)).await {
+            Either::First(event) => event,
+            Either::Second(None) => continue,
+            Either::Second(Some(frame)) => {
+                if let Err(e) = send(conn, &server.control.from_device, frame).await {
+                    warn!("BLE: notify failed: {e:?}");
+                }
+                continue;
+            }
+        };
+        let len = match event {
             GattConnectionEvent::Disconnected { reason } => {
                 info!("BLE: disconnected: {reason:?}");
-                return;
+                return false;
             }
-            GattConnectionEvent::PairingComplete {
-                security_level,
-                bond,
-            } => {
-                info!(
-                    "BLE: paired ({security_level:?}, bonded: {})",
-                    bond.is_some()
-                );
+            GattConnectionEvent::PairingComplete { security_level, .. } => {
+                info!("BLE: paired ({security_level:?})");
                 continue;
             }
             GattConnectionEvent::PairingFailed(e) => {
@@ -215,13 +233,17 @@ async fn serve(conn: &GattConnection<'_, '_, DefaultPacketPool>, server: &Server
             let Some((msg_type, payload)) = frames.frame() else {
                 continue;
             };
-            let mut out = [0u8; 64];
-            let reply = handle_frame(msg_type, payload, &mut out);
-            frames.clear();
+            let mut needs_restart = false;
+            let reply =
+                control::handle(msg_type, payload, settings, &mut out, &mut needs_restart).await;
             if let Some(reply) = reply
                 && let Err(e) = send(conn, &server.control.from_device, reply).await
             {
                 warn!("BLE: notify failed: {e:?}");
+            }
+            frames.clear();
+            if needs_restart {
+                return true;
             }
         }
     }
@@ -240,48 +262,6 @@ async fn send(
         characteristic.notify_raw(conn, part, false).await?;
     }
     Ok(())
-}
-
-/// Prototype dispatcher, to be replaced by the handler shared with TCP.
-fn handle_frame<'a>(msg_type: u8, payload: &[u8], out: &'a mut [u8]) -> Option<&'a [u8]> {
-    match protocol::parse(msg_type, payload) {
-        Ok(Command::Hello { version }) if version == protocol::PROTOCOL_VERSION => {
-            let mut body = [0u8; 34];
-            let name = &DEVICE_NAME.as_bytes()[..DEVICE_NAME.len().min(32)];
-            body[0] = protocol::PROTOCOL_VERSION;
-            body[1] = usb::mode() as u8;
-            body[2..2 + name.len()].copy_from_slice(name);
-            Some(protocol::frame(
-                out,
-                msg::HELLO_ACK,
-                &body[..2 + name.len()],
-            ))
-        }
-        Ok(Command::Hello { .. }) => {
-            Some(protocol::frame(out, msg::ERROR, &[error::VERSION_MISMATCH]))
-        }
-        Ok(Command::Ping { seq }) => {
-            let s = seq.to_le_bytes();
-            let body = [s[0], s[1], s[2], s[3], usb::is_configured() as u8];
-            Some(protocol::frame(out, msg::PONG, &body))
-        }
-        Ok(Command::Gamepad(report)) if usb::mode().has_gamepad() => {
-            usb::submit_gamepad(report);
-            None
-        }
-        Ok(Command::Keyboard(report)) if usb::mode().has_keyboard() => {
-            usb::submit_keyboard(report);
-            None
-        }
-        Ok(Command::ReleaseAll) => {
-            usb::release_all();
-            None
-        }
-        // SET_MODE / SET_WIFI need the shared settings and a restart; they come
-        // with the handler shared with TCP.
-        Ok(_) => Some(protocol::frame(out, msg::ERROR, &[error::UNSUPPORTED])),
-        Err(code) => Some(protocol::frame(out, msg::ERROR, &[code])),
-    }
 }
 
 /// Reassembles `[type][len][payload]` frames from a byte stream.

@@ -124,7 +124,7 @@ async fn main(spawner: Spawner) -> ! {
         let connector =
             esp_radio::ble::controller::BleConnector::new(peripherals.BT, Default::default())
                 .expect("failed to initialize BLE");
-        spawner.spawn(nxcontroller_firmware::ble::ble_task(connector).unwrap());
+        spawner.spawn(nxcontroller_firmware::ble::ble_task(connector, settings).unwrap());
     }
 
     let rng = Rng::new();
