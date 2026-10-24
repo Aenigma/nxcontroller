@@ -17,6 +17,7 @@ pub mod msg {
     pub const SET_MODE: u8 = 0x03;
     pub const SET_WIFI: u8 = 0x04;
     pub const SET_OPTION: u8 = 0x05;
+    pub const LOGS: u8 = 0x06;
     pub const GAMEPAD: u8 = 0x10;
     pub const KEYBOARD: u8 = 0x11;
     pub const TYPE: u8 = 0x12;
@@ -28,6 +29,7 @@ pub mod msg {
     pub const WIFI_ACK: u8 = 0x84;
     pub const TYPE_PROGRESS: u8 = 0x85;
     pub const OPTION_ACK: u8 = 0x86;
+    pub const LOG: u8 = 0x87;
     pub const ERROR: u8 = 0x8F;
 }
 
@@ -36,6 +38,8 @@ pub mod feature {
     pub const KEYBOARD: u8 = 0x02;
     /// The device paces TYPE keystrokes itself.
     pub const PACED_TYPING: u8 = 0x80;
+    /// LOGS works: the device keeps its recent log output.
+    pub const LOGS: u8 = 0x20;
     /// Built with WiFi: SET_WIFI works and the board can join a network.
     pub const WIFI: u8 = 0x40;
 }
@@ -89,6 +93,9 @@ pub enum Command<'a> {
     SetOption {
         id: u8,
         value: u8,
+    },
+    Logs {
+        follow: bool,
     },
     Gamepad(GamepadReport),
     Keyboard(KeyboardReport),
@@ -161,6 +168,12 @@ pub fn parse(msg_type: u8, payload: &[u8]) -> Result<Command<'_>, u8> {
                 press_ms: payload[1],
                 release_ms: payload[2],
                 keys: &payload[3..],
+            })
+        }
+        msg::LOGS => {
+            expect(1)?;
+            Ok(Command::Logs {
+                follow: payload[0] != 0,
             })
         }
         msg::SET_OPTION => {

@@ -11,6 +11,7 @@ compile_error!("`coex` is only for builds with both `ble` and `wifi`");
 pub mod ble;
 pub mod config;
 pub mod control;
+pub mod logbuf;
 #[cfg(feature = "wifi")]
 pub mod net;
 pub mod protocol;

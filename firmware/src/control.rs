@@ -7,27 +7,58 @@
 use log::{info, warn};
 
 use crate::config::DEVICE_NAME;
+use crate::logbuf::{self, Cursor, Reader};
 use crate::protocol::{self, Command, error, feature, msg, option};
 use crate::settings::Mode;
 use crate::{SharedSettings, usb};
 
 /// Buffer size for a reply frame.
 pub const REPLY_MAX: usize = 64;
+/// Most log text per LOG frame (PROTOCOL.md).
+pub const LOG_CHUNK: usize = 200;
+/// Buffer size for a LOG frame.
+pub const LOG_FRAME_MAX: usize = 2 + LOG_CHUNK;
 
-/// Handles one client frame. Returns the reply to send, if any. Sets `restart`
-/// when the board must reboot after the reply has gone out (settings changed).
+/// Per-connection state.
+pub struct Session {
+    reader: Reader,
+    /// Sending log output (after LOGS), until caught up, or for good with `follow`.
+    logs_active: bool,
+    follow: bool,
+    log_cursor: Cursor,
+    /// Start the next LOG frame with "…\n": output before it was dropped.
+    log_gap: bool,
+    /// Set by `handle` when the board must reboot after the reply has gone out.
+    pub restart: bool,
+}
+
+impl Session {
+    pub fn new(reader: Reader) -> Self {
+        Self {
+            reader,
+            logs_active: false,
+            follow: false,
+            log_cursor: Cursor::default(),
+            log_gap: false,
+            restart: false,
+        }
+    }
+}
+
+/// Handles one client frame. Returns the reply to send, if any. Sets
+/// `session.restart` when the board must reboot after the reply has gone out.
 pub async fn handle<'a>(
     msg_type: u8,
     payload: &[u8],
     settings: SharedSettings,
     out: &'a mut [u8],
-    restart: &mut bool,
+    session: &mut Session,
 ) -> Option<&'a [u8]> {
     match protocol::parse(msg_type, payload) {
         Ok(Command::Hello { version }) if version == protocol::PROTOCOL_VERSION => {
             let mut body = [0u8; 34];
             // Mode values are the gamepad/keyboard feature bits.
-            let mut features = usb::mode() as u8 | feature::PACED_TYPING;
+            let mut features = usb::mode() as u8 | feature::PACED_TYPING | feature::LOGS;
             if cfg!(feature = "wifi") {
                 features |= feature::WIFI;
             }
@@ -57,7 +88,7 @@ pub async fn handle<'a>(
             Some(new) => match settings.lock().await.set_mode(new) {
                 Ok(()) => {
                     info!("mode set to {new:?}");
-                    *restart = true;
+                    session.restart = true;
                     Some(protocol::frame(out, msg::MODE_ACK, &[mode, 1]))
                 }
                 Err(e) => {
@@ -73,7 +104,7 @@ pub async fn handle<'a>(
             match settings.lock().await.set_wifi(ssid, password) {
                 Ok(()) => {
                     info!("WiFi credentials updated (network '{ssid}')");
-                    *restart = true;
+                    session.restart = true;
                     Some(protocol::frame(out, msg::WIFI_ACK, &[]))
                 }
                 Err(crate::settings::SettingsError::TooLong) => {
@@ -84,6 +115,14 @@ pub async fn handle<'a>(
                     Some(protocol::frame(out, msg::ERROR, &[error::STORAGE]))
                 }
             }
+        }
+        Ok(Command::Logs { follow }) => {
+            // Everything in memory first, then (with follow) new output as it comes.
+            session.log_cursor = Cursor::oldest();
+            session.log_gap = Cursor::anything_dropped();
+            session.logs_active = true;
+            session.follow = follow;
+            None
         }
         Ok(Command::SetOption {
             id: option::KEYBOARD_POLL_MS,
@@ -105,7 +144,7 @@ pub async fn handle<'a>(
                 match settings.set_keyboard_poll_ms(ms) {
                     Ok(()) => {
                         info!("keyboard poll interval set to {ms} ms");
-                        *restart = true;
+                        session.restart = true;
                         Some(protocol::frame(
                             out,
                             msg::OPTION_ACK,
@@ -151,6 +190,34 @@ pub async fn handle<'a>(
             None
         }
         Err(code) => Some(protocol::frame(out, msg::ERROR, &[code])),
+    }
+}
+
+/// Waits until there's log output to send this client (after LOGS), then returns
+/// the next LOG frame. Transports race this against reading the next frame.
+pub async fn next_log<'a>(session: &mut Session, out: &'a mut [u8]) -> &'a [u8] {
+    loop {
+        if session.logs_active && session.log_cursor.has_unread() {
+            let mut text = [0u8; LOG_CHUNK];
+            let mut n = 0;
+            let (read, lost) = session.log_cursor.read(&mut text[4..]);
+            if session.log_gap || lost {
+                text[..4].copy_from_slice("…\n".as_bytes());
+                n = 4;
+                session.log_gap = false;
+            }
+            text.copy_within(4..4 + read, n);
+            n += read;
+            return protocol::frame(out, msg::LOG, &text[..n]);
+        }
+        if session.logs_active && !session.follow {
+            session.logs_active = false; // caught up, and not following
+        }
+        if session.logs_active {
+            logbuf::wait_for_output(session.reader).await;
+        } else {
+            core::future::pending::<()>().await;
+        }
     }
 }
 

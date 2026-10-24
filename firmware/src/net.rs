@@ -1,7 +1,7 @@
 //! WiFi (station, with the setup hotspot as fallback), TCP control server and
 //! UDP discovery responder.
 
-use embassy_futures::select::{Either, select};
+use embassy_futures::select::{Either3, select3};
 use embassy_net::tcp::TcpSocket;
 use embassy_net::udp::{PacketMetadata, UdpSocket};
 use embassy_net::{Runner, Stack};
@@ -13,6 +13,7 @@ use esp_radio::wifi::{Config as WifiConfig, Interface, WifiController};
 use log::{info, warn};
 
 use crate::config::{DEVICE_NAME, SETUP_SSID};
+use crate::logbuf::Reader;
 use crate::protocol;
 use crate::{SharedSettings, control, restart, setup, usb};
 
@@ -130,22 +131,33 @@ pub async fn control_server_task(stack: Stack<'static>, settings: SharedSettings
 async fn serve(socket: &mut TcpSocket<'_>, settings: SharedSettings) -> bool {
     let mut header = [0u8; 2];
     let mut payload = [0u8; 255];
-    let mut out = [0u8; 64];
+    let mut out = [0u8; control::REPLY_MAX];
+    let mut log_out = [0u8; control::LOG_FRAME_MAX];
+    let mut session = control::Session::new(Reader::Tcp);
 
     loop {
-        // Wait for the next message, reporting typing progress in the meantime:
-        // the client holds back further TYPE messages until it hears about it.
-        // (TcpSocket::read is cancel-safe, so losing the race drops no data.)
-        match select(socket.read(&mut header[..1]), control::progress(&mut out)).await {
-            Either::First(Ok(n)) if n > 0 => {}
-            Either::First(_) => return false,
-            Either::Second(None) => continue,
-            Either::Second(Some(frame)) => {
-                if socket.write_all(frame).await.is_err() || socket.flush().await.is_err() {
-                    return false;
-                }
-                continue;
+        // Wait for the next message, sending typing progress and log output in the
+        // meantime: the client holds back further TYPE messages until it hears
+        // about progress. (TcpSocket::read is cancel-safe: losing the race drops no data.)
+        let frame = match select3(
+            socket.read(&mut header[..1]),
+            control::progress(&mut out),
+            control::next_log(&mut session, &mut log_out),
+        )
+        .await
+        {
+            Either3::First(Ok(n)) if n > 0 => None,
+            Either3::First(_) => return false,
+            Either3::Second(frame) => Some(frame),
+            Either3::Third(frame) => Some(Some(frame)),
+        };
+        if let Some(frame) = frame {
+            if let Some(frame) = frame
+                && (socket.write_all(frame).await.is_err() || socket.flush().await.is_err())
+            {
+                return false;
             }
+            continue;
         }
         if socket.read_exact(&mut header[1..]).await.is_err() {
             return false;
@@ -154,16 +166,15 @@ async fn serve(socket: &mut TcpSocket<'_>, settings: SharedSettings) -> bool {
         if socket.read_exact(&mut payload[..len]).await.is_err() {
             return false;
         }
-        let mut restart = false;
         let reply =
-            control::handle(header[0], &payload[..len], settings, &mut out, &mut restart).await;
+            control::handle(header[0], &payload[..len], settings, &mut out, &mut session).await;
 
         if let Some(reply) = reply
             && (socket.write_all(reply).await.is_err() || socket.flush().await.is_err())
         {
-            return restart;
+            return session.restart;
         }
-        if restart {
+        if session.restart {
             return true;
         }
     }

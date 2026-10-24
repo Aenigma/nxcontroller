@@ -23,12 +23,13 @@
 //!   typing progress goes to whichever transport is waiting for it.
 
 use embassy_futures::join::join;
-use embassy_futures::select::{Either, select};
+use embassy_futures::select::{Either3, select3};
 use esp_radio::ble::controller::BleConnector;
 use log::{info, warn};
 use trouble_host::prelude::*;
 
 use crate::config::DEVICE_NAME;
+use crate::logbuf::Reader;
 use crate::{SharedSettings, control, restart, usb};
 
 /// `a6240001-7a84-4692-ab2b-1fe245e78947`
@@ -181,14 +182,29 @@ async fn serve(
     let mut write = [0u8; MAX_ATT_PAYLOAD];
     let mut out = [0u8; control::REPLY_MAX];
     let mut progress = [0u8; 8];
+    let mut log_out = [0u8; control::LOG_FRAME_MAX];
+    let mut session = control::Session::new(Reader::Ble);
     loop {
-        // Wait for the client, forwarding typing progress in the meantime.
-        let event = match select(conn.next(), control::progress(&mut progress)).await {
-            Either::First(event) => event,
-            Either::Second(None) => continue,
-            Either::Second(Some(frame)) => {
-                if let Err(e) = send(conn, &server.control.from_device, frame).await {
-                    warn!("BLE: notify failed: {e:?}");
+        // Wait for the client, forwarding typing progress and log output meanwhile.
+        let frame = match select3(
+            conn.next(),
+            control::progress(&mut progress),
+            control::next_log(&mut session, &mut log_out),
+        )
+        .await
+        {
+            Either3::First(event) => Err(event),
+            Either3::Second(frame) => Ok(frame),
+            Either3::Third(frame) => Ok(Some(frame)),
+        };
+        let event = match frame {
+            Err(event) => event,
+            Ok(frame) => {
+                if let Some(frame) = frame
+                    && let Err(e) = send(conn, &server.control.from_device, frame).await
+                {
+                    // Not logged at warn: a log line here would be sent again, and fail again.
+                    log::debug!("BLE: notify failed: {e:?}");
                 }
                 continue;
             }
@@ -233,16 +249,14 @@ async fn serve(
             let Some((msg_type, payload)) = frames.frame() else {
                 continue;
             };
-            let mut needs_restart = false;
-            let reply =
-                control::handle(msg_type, payload, settings, &mut out, &mut needs_restart).await;
+            let reply = control::handle(msg_type, payload, settings, &mut out, &mut session).await;
             if let Some(reply) = reply
                 && let Err(e) = send(conn, &server.control.from_device, reply).await
             {
                 warn!("BLE: notify failed: {e:?}");
             }
             frames.clear();
-            if needs_restart {
+            if session.restart {
                 return true;
             }
         }
