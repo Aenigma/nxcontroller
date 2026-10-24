@@ -1,0 +1,113 @@
+# Builds the firmware and the web page (installer + remote), publishes the page
+# to GitHub Pages from the default branch, and attaches the firmware to releases
+# for v* tags.
+#
+# One-time setup: Settings -> Pages -> Build and deployment -> Source: "GitHub Actions".
+name: Build
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Xtensa Rust toolchain installed by espup (rust-toolchain.toml selects "esp").
+  ESP_RUST_VERSION: "1.97.0.0"
+  ELF: firmware/target/xtensa-esp32s3-none-elf/release/nxcontroller-firmware
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Test
+        working-directory: python
+        run: uv run pytest -q
+
+  firmware:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install espup and espflash
+        uses: taiki-e/install-action@v2
+        with:
+          tool: espup,espflash
+
+      - name: Install the Xtensa Rust toolchain
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: espup install --targets esp32s3 --toolchain-version "$ESP_RUST_VERSION" --export-file "$HOME/export-esp.sh"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: firmware
+
+      - name: Lint (ble + wifi, ble only, wifi only)
+        working-directory: firmware
+        run: |
+          . "$HOME/export-esp.sh"
+          cargo clippy --release -- -D warnings
+          cargo clippy --release --no-default-features --features ble -- -D warnings
+          cargo clippy --release --no-default-features --features wifi -- -D warnings
+
+      - name: Build the web page and its firmware (Bluetooth only)
+        run: |
+          . "$HOME/export-esp.sh"
+          scripts/web.sh
+
+      - name: Collect firmware images
+        run: |
+          mkdir -p dist
+          cp web/firmware/bootloader.bin web/firmware/partitions.bin web/firmware/app.bin dist/
+          # One image for any flasher: write it at offset 0x0.
+          espflash save-image --chip esp32s3 --merge "$ELF" dist/nxcontroller-esp32s3-merged.bin
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          path: dist/
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/
+
+  pages:
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    needs: [python, firmware]
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [python, firmware]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: firmware
+          path: dist/
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
