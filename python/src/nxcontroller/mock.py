@@ -124,6 +124,7 @@ class MockDevice:
                 return p.frame(p.MSG_ERROR, b"\x04")
             features = (p.FEATURE_GAMEPAD if self.gamepad else 0) | (p.FEATURE_KEYBOARD if self.keyboard else 0)
             features |= p.FEATURE_PACED_TYPING if self.paced else 0
+            features |= p.FEATURE_WIFI  # it's reached over TCP, so it has WiFi
             return p.frame(p.MSG_HELLO_ACK, bytes((p.PROTOCOL_VERSION, features)) + b"mock")
         if msg_type == p.MSG_SET_MODE and len(payload) == 1:
             if payload[0] not in p.MODE_NAMES:

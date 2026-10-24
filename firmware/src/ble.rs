@@ -1,4 +1,4 @@
-//! Bluetooth LE control transport (cargo feature `ble`). **Prototype.**
+//! Bluetooth LE control transport (cargo feature `ble`, on by default).
 //!
 //! One custom GATT service carries the same `[type u8][len u8][payload]` frames
 //! as the TCP control channel (see `protocol/PROTOCOL.md`):

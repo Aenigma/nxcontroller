@@ -1,13 +1,20 @@
 # esp-nxcontroller
 
-An ESP32-S3 joins your WiFi and shows up over its native USB port as a
-**Switch-compatible wired controller plus a USB keyboard**. A Python library
-drives it remotely.
+An ESP32-S3 shows up over its native USB port as a **Switch-compatible wired
+controller plus a USB keyboard**. You control it from a web page over Bluetooth,
+or from a Python library over WiFi.
 
 ```
- your PC ──WiFi/TCP──▶ ESP32-S3 ──USB HID──▶ Nintendo Switch (or a PC)
- (python/)              (firmware/)
+ browser ──Bluetooth LE──┐
+ (web/)                  ├─▶ ESP32-S3 ──USB HID──▶ Nintendo Switch (or a PC)
+ Python ──WiFi/TCP───────┘   (firmware/)
+ (python/)
 ```
+
+**Start here:** open the project's GitHub Pages site in Chrome or Edge. It
+installs the firmware and then works as the remote: gamepad, typing text files,
+mode and WiFi settings. To run that page locally, use `make web`
+(http://localhost:8700).
 
 ## Layout
 
@@ -15,7 +22,8 @@ drives it remotely.
 |-------------|-------------------------------------------------------|-------------------------------|
 | `firmware/` | Rust `no_std` firmware (esp-hal, esp-radio, embassy)  | Xtensa Rust via `espup`       |
 | `python/`   | `nxcontroller` package and `nxc` CLI                  | Python ≥3.10, `uv`            |
-| `protocol/` | `PROTOCOL.md`, the wire contract between the two      | –                             |
+| `web/`      | The single page: installer (ESP Web Tools) + remote (Web Bluetooth) | – (built by `scripts/web.sh`) |
+| `protocol/` | `PROTOCOL.md`, the wire contract between them         | –                             |
 | `scripts/`  | setup / build / flash / monitor / test                | bash                          |
 
 `firmware/` and `python/` share no code and no build system. Each builds,
@@ -25,10 +33,7 @@ versions and ships on its own. They are coupled only through
 
 ## Quick start
 
-**No toolchain: web flasher.** `make web` builds a generic firmware and serves
-the installer page on http://localhost:8700 (Chrome or Edge). Host `web/` on any
-https static host to share it. After installing, join the `nxcontroller-setup`
-WiFi hotspot from your phone and enter your network's details.
+**No toolchain:** use the web page (above).
 
 **From source:**
 
@@ -107,10 +112,18 @@ cd python && uv run nxc --host 127.0.0.1 ping
   retrying its network in the meantime, so a slow router still gets picked up.
   Move it to another network with `uv run nxc wifi "SSID" "password"`.
   The hotspot is open, so anyone nearby can configure the board while it's up.
-- **Web flasher** (`scripts/web.sh`, files in `web/`): ESP Web Tools with the
+- **Web page** (`scripts/web.sh`, files in `web/`): ESP Web Tools with the
   bootloader, partition table and app shipped as separate parts, so updating
-  doesn't wipe saved WiFi or mode unless you tick "erase". It always builds without
-  your `.env` WiFi.
+  doesn't wipe saved WiFi or mode unless you tick "erase". It always builds the
+  Bluetooth-only firmware, ignoring your `.env`. CI (`.github/workflows/build.yml`) builds it on every push,
+  deploys it to GitHub Pages from the default branch, and attaches the firmware
+  (parts plus one merged image for offset 0x0) to releases for `v*` tags.
+- **Transports are Cargo features:** `ble` (the web page), `wifi` (the Python
+  package; includes the setup hotspot), and `coex` (required when both are on).
+  Source builds default to all three. The web page's firmware is Bluetooth only
+  (`--no-default-features --features ble`), so it never opens a hotspot or an
+  unauthenticated TCP port. BLE pairs without bonding: the link is encrypted, and
+  each connection pairs afresh. See `docs/ble-findings.md`.
 - **USB mode** is chosen at runtime over WiFi and saved on the board:
 
   | Mode       | USB device                     | Identity                    |
@@ -126,8 +139,8 @@ cd python && uv run nxc --host 127.0.0.1 ping
   nx.set_mode("gamepad")
   ```
   The HORI identity is the standard way to get a Switch to accept a custom wired
-  pad without a handshake. Keyboard mode is a plain HID keyboard. If your host
-  ignores the keyboard half of `both` (a Switch 2 did in our testing), use `keyboard` mode.
+  pad without a handshake. Keyboard mode is a plain HID keyboard. `both` works on a
+  Switch 2. Use a single mode only if a host rejects the composite device.
   On a Switch, register the pad by pressing L+R on *Controllers → Change Grip/Order*
   (`nxc tap L R --duration 0.5`). Calling an input type the current mode
   lacks raises `NXError`.

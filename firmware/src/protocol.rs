@@ -36,6 +36,8 @@ pub mod feature {
     pub const KEYBOARD: u8 = 0x02;
     /// The device paces TYPE keystrokes itself.
     pub const PACED_TYPING: u8 = 0x80;
+    /// Built with WiFi: SET_WIFI works and the board can join a network.
+    pub const WIFI: u8 = 0x40;
 }
 
 /// SET_OPTION ids.

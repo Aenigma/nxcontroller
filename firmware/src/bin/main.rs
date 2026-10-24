@@ -8,25 +8,18 @@
 #![deny(clippy::large_stack_frames)]
 
 use embassy_executor::Spawner;
-use embassy_net::{Ipv4Cidr, StackResources, StaticConfigV4};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
 use esp_backtrace as _;
 use esp_bootloader_esp_idf::partitions::FlashStorage;
 use esp_hal::clock::CpuClock;
-use esp_hal::rng::Rng;
 use esp_hal::timer::timg::TimerGroup;
 use esp_hal::usb::otg::{Usb, embassy_usb_device};
-use esp_radio::wifi::sta::StationConfig;
-use esp_radio::wifi::{
-    AuthenticationMethodConfig, Config as WifiConfig, ControllerConfig, Interface, PowerSaveMode,
-    WifiController,
-};
-use log::{info, warn};
+use log::info;
 use nxcontroller_firmware::SharedSettings;
-use nxcontroller_firmware::config::{DEVICE_NAME, WIFI_PASSWORD, WIFI_SSID};
+use nxcontroller_firmware::config::DEVICE_NAME;
 use nxcontroller_firmware::settings::Settings;
-use nxcontroller_firmware::{net, setup, usb};
+use nxcontroller_firmware::usb;
 use static_cell::StaticCell;
 
 extern crate alloc;
@@ -46,7 +39,7 @@ async fn main(spawner: Spawner) -> ! {
     let peripherals = esp_hal::init(config);
 
     esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 73744);
-    // BLE: the controller and WiFi/BT coexistence allocate from the heap.
+    // BLE: the controller (and WiFi/BT coexistence) allocate from the heap.
     #[cfg(feature = "ble")]
     esp_alloc::heap_allocator!(size: 64 * 1024);
 
@@ -54,9 +47,11 @@ async fn main(spawner: Spawner) -> ! {
     esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
 
     info!(
-        "nxcontroller v{} '{}' booting",
+        "nxcontroller v{} '{}' booting (ble: {}, wifi: {})",
         env!("CARGO_PKG_VERSION"),
-        DEVICE_NAME
+        DEVICE_NAME,
+        cfg!(feature = "ble"),
+        cfg!(feature = "wifi"),
     );
 
     // --- USB HID (native USB port: GPIO20 = D+, GPIO19 = D-) ---
@@ -83,42 +78,15 @@ async fn main(spawner: Spawner) -> ! {
         spawner.spawn(usb::keyboard_task(keyboard).unwrap());
     }
 
-    // --- WiFi ---
-    // Saved credentials win; then ones built in from firmware/.env; else setup hotspot.
     static SETTINGS: StaticCell<Mutex<CriticalSectionRawMutex, Settings>> = StaticCell::new();
     let settings: SharedSettings = SETTINGS.init(Mutex::new(settings));
-    let station = {
-        let saved = settings.lock().await;
-        let (credentials, source) = match saved.wifi() {
-            Some(c) => (Some(c), "saved on device"),
-            None => (WIFI_SSID.map(|ssid| (ssid, WIFI_PASSWORD)), "built in"),
-        };
-        credentials.and_then(|(ssid, password)| {
-            info!("WiFi: network '{ssid}' ({source})");
-            let station = station_config(ssid, password);
-            if station.is_none() {
-                warn!("WiFi: credentials for '{ssid}' are invalid, ignoring them");
-            }
-            station
-        })
-    };
 
-    let initial = match &station {
-        Some(station) => WifiConfig::Station(station.clone()),
-        None => WifiConfig::Station(StationConfig::default()),
-    };
-    let mut controller = WifiController::new(
-        peripherals.WIFI,
-        ControllerConfig::default().with_initial_config(initial),
-    )
-    .expect("failed to initialize WiFi");
-    // Power saving adds tens of milliseconds of latency to every packet.
-    controller
-        .set_power_saving(PowerSaveMode::None)
-        .expect("failed to disable WiFi power saving");
+    // --- WiFi (feature `wifi`) ---
+    // Initialised before BLE: with both, they share the radio through `coex`.
+    #[cfg(feature = "wifi")]
+    let wifi = wifi::init(peripherals.WIFI, settings).await;
 
-    // --- Bluetooth LE (optional second control transport) ---
-    // After WiFi: both share the radio through esp-radio's `coex`.
+    // --- Bluetooth LE (feature `ble`) ---
     #[cfg(feature = "ble")]
     {
         let connector =
@@ -127,57 +95,131 @@ async fn main(spawner: Spawner) -> ! {
         spawner.spawn(nxcontroller_firmware::ble::ble_task(connector, settings).unwrap());
     }
 
-    let rng = Rng::new();
-    let seed = (u64::from(rng.random()) << 32) | u64::from(rng.random());
-
-    // Network stack on your WiFi (DHCP client)...
-    static RESOURCES: StaticCell<StackResources<4>> = StaticCell::new();
-    let (stack, runner) = embassy_net::new(
-        Interface::station(),
-        embassy_net::Config::dhcpv4(Default::default()),
-        RESOURCES.init(StackResources::new()),
-        seed,
-    );
-    // ...and on the setup hotspot (fixed address; only active while the hotspot is up).
-    static AP_RESOURCES: StaticCell<StackResources<4>> = StaticCell::new();
-    let (ap_stack, ap_runner) = embassy_net::new(
-        Interface::access_point(),
-        embassy_net::Config::ipv4_static(StaticConfigV4 {
-            address: Ipv4Cidr::new(setup::AP_ADDRESS, 24),
-            gateway: None,
-            dns_servers: Default::default(),
-        }),
-        AP_RESOURCES.init(StackResources::new()),
-        seed.rotate_left(32),
-    );
-
-    spawner.spawn(net::wifi_task(controller, station).unwrap());
-    spawner.spawn(net::net_task(runner).unwrap());
-    spawner.spawn(net::control_server_task(stack, settings).unwrap());
-    spawner.spawn(net::discovery_task(stack).unwrap());
-    spawner.spawn(net::net_task(ap_runner).unwrap());
-    spawner.spawn(setup::http_task(ap_stack, settings).unwrap());
-    spawner.spawn(setup::dhcp_task(ap_stack).unwrap());
-    spawner.spawn(setup::dns_task(ap_stack).unwrap());
+    #[cfg(feature = "wifi")]
+    wifi::start(spawner, wifi, settings);
 
     loop {
         embassy_time::Timer::after(embassy_time::Duration::from_secs(3600)).await;
     }
 }
 
-#[allow(
-    clippy::large_stack_frames,
-    reason = "runs once at boot, on main's stack"
-)]
-fn station_config(ssid: &str, password: &str) -> Option<StationConfig> {
-    let auth = if password.is_empty() {
-        AuthenticationMethodConfig::Open
-    } else {
-        AuthenticationMethodConfig::Wpa2Personal(password.try_into().ok()?)
+#[cfg(feature = "wifi")]
+mod wifi {
+    use embassy_executor::Spawner;
+    use embassy_net::{Ipv4Cidr, StackResources, StaticConfigV4};
+    use esp_hal::peripherals::WIFI;
+    use esp_hal::rng::Rng;
+    use esp_radio::wifi::sta::StationConfig;
+    use esp_radio::wifi::{
+        AuthenticationMethodConfig, Config as WifiConfig, ControllerConfig, Interface,
+        PowerSaveMode, WifiController,
     };
-    Some(
-        StationConfig::default()
-            .with_ssid(ssid.try_into().ok()?)
-            .with_authentication(auth),
-    )
+    use log::{info, warn};
+    use nxcontroller_firmware::SharedSettings;
+    use nxcontroller_firmware::config::{WIFI_PASSWORD, WIFI_SSID};
+    use nxcontroller_firmware::{net, setup};
+    use static_cell::StaticCell;
+
+    pub struct Wifi {
+        controller: WifiController<'static>,
+        station: Option<StationConfig>,
+    }
+
+    /// Picks the network (saved credentials win, then ones built in from
+    /// firmware/.env, else none: setup hotspot) and brings up the controller.
+    #[allow(
+        clippy::large_stack_frames,
+        reason = "runs once at boot, on main's stack"
+    )]
+    pub async fn init(device: WIFI<'static>, settings: SharedSettings) -> Wifi {
+        let station = {
+            let saved = settings.lock().await;
+            let (credentials, source) = match saved.wifi() {
+                Some(c) => (Some(c), "saved on device"),
+                None => (WIFI_SSID.map(|ssid| (ssid, WIFI_PASSWORD)), "built in"),
+            };
+            credentials.and_then(|(ssid, password)| {
+                info!("WiFi: network '{ssid}' ({source})");
+                let station = station_config(ssid, password);
+                if station.is_none() {
+                    warn!("WiFi: credentials for '{ssid}' are invalid, ignoring them");
+                }
+                station
+            })
+        };
+
+        let initial = match &station {
+            Some(station) => WifiConfig::Station(station.clone()),
+            None => WifiConfig::Station(StationConfig::default()),
+        };
+        let mut controller = WifiController::new(
+            device,
+            ControllerConfig::default().with_initial_config(initial),
+        )
+        .expect("failed to initialize WiFi");
+        // Power saving adds tens of milliseconds of latency to every packet.
+        controller
+            .set_power_saving(PowerSaveMode::None)
+            .expect("failed to disable WiFi power saving");
+        Wifi {
+            controller,
+            station,
+        }
+    }
+
+    /// Network stacks and tasks: station (DHCP) for control, plus the setup hotspot.
+    #[allow(
+        clippy::large_stack_frames,
+        reason = "runs once at boot, on main's stack"
+    )]
+    pub fn start(spawner: Spawner, wifi: Wifi, settings: SharedSettings) {
+        let rng = Rng::new();
+        let seed = (u64::from(rng.random()) << 32) | u64::from(rng.random());
+
+        static RESOURCES: StaticCell<StackResources<4>> = StaticCell::new();
+        let (stack, runner) = embassy_net::new(
+            Interface::station(),
+            embassy_net::Config::dhcpv4(Default::default()),
+            RESOURCES.init(StackResources::new()),
+            seed,
+        );
+        // Fixed address; only active while the hotspot is up.
+        static AP_RESOURCES: StaticCell<StackResources<4>> = StaticCell::new();
+        let (ap_stack, ap_runner) = embassy_net::new(
+            Interface::access_point(),
+            embassy_net::Config::ipv4_static(StaticConfigV4 {
+                address: Ipv4Cidr::new(setup::AP_ADDRESS, 24),
+                gateway: None,
+                dns_servers: Default::default(),
+            }),
+            AP_RESOURCES.init(StackResources::new()),
+            seed.rotate_left(32),
+        );
+
+        spawner.spawn(net::wifi_task(wifi.controller, wifi.station).unwrap());
+        spawner.spawn(net::net_task(runner).unwrap());
+        spawner.spawn(net::control_server_task(stack, settings).unwrap());
+        spawner.spawn(net::discovery_task(stack).unwrap());
+        spawner.spawn(net::net_task(ap_runner).unwrap());
+        spawner.spawn(setup::http_task(ap_stack, settings).unwrap());
+        spawner.spawn(setup::dhcp_task(ap_stack).unwrap());
+        spawner.spawn(setup::dns_task(ap_stack).unwrap());
+    }
+
+    #[allow(
+        clippy::large_stack_frames,
+        reason = "runs once at boot, on main's stack"
+    )]
+    fn station_config(ssid: &str, password: &str) -> Option<StationConfig> {
+        let auth = if password.is_empty() {
+            AuthenticationMethodConfig::Open
+        } else {
+            AuthenticationMethodConfig::Wpa2Personal(password.try_into().ok()?)
+        };
+        Some(
+            StationConfig::default()
+                .with_ssid(ssid.try_into().ok()?)
+                .with_authentication(auth),
+        )
+    }
 }

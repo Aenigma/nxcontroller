@@ -10,10 +10,17 @@ Bump `PROTOCOL_VERSION` on any incompatible change.
 
 ## Transport
 
-| Purpose   | Transport | Port |
-|-----------|-----------|------|
-| Control   | TCP       | 7700 |
-| Discovery | UDP       | 7701 |
+| Purpose   | Transport | Where |
+|-----------|-----------|-------|
+| Control   | TCP (firmware feature `wifi`) | port 7700 |
+| Discovery | UDP (feature `wifi`) | port 7701 |
+| Control   | Bluetooth LE GATT (feature `ble`) | service `a6240001-7a84-4692-ab2b-1fe245e78947` |
+
+Over BLE, frames are written to characteristic `a6240002-…` (write / write without
+response) and come back as notifications on `a6240003-…`. Both directions are byte
+streams: a frame may span several writes or notifications. Both characteristics need
+an encrypted link, so the client pairs first (LE Secure Connections, Just Works, no
+bonding). The message set is identical on both transports.
 
 The device accepts **one control client at a time**. When that client
 disconnects, the device **releases all inputs**, so a crashed script never
@@ -64,8 +71,9 @@ check that the link is up.
 | `0x86` | OPTION_ACK | `option: u8, value: u8, restarting: u8`                       |
 | `0x8F` | ERROR      | `code: u8`                                                    |
 
-`features` bit flags: `0x01` gamepad, `0x02` keyboard, `0x80` paced typing (TYPE). These reflect the
-current USB mode, and mode values use the same bits.
+`features` bit flags: `0x01` gamepad, `0x02` keyboard, `0x40` WiFi built in,
+`0x80` paced typing (TYPE). The low two bits reflect the current USB mode, and mode
+values use the same bits.
 
 `usb_configured` is `1` once the USB host (Switch or PC) has enumerated the device.
 
@@ -141,7 +149,8 @@ mode is already active, it replies `restarting = 0` and nothing happens.
 
 ## WiFi setup
 
-`SET_WIFI` saves new credentials (SSID 1–32 bytes, password empty or 8–64
+Firmware built without WiFi (no `0x40` feature bit) answers `SET_WIFI` with error `3`.
+Otherwise, `SET_WIFI` saves new credentials (SSID 1–32 bytes, password empty or 8–64
 bytes), replies `WIFI_ACK`, closes the connection and reboots onto that network.
 
 A board with no saved credentials, or one that fails to join its network

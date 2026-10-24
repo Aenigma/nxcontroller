@@ -34,6 +34,7 @@ MSG_ERROR = 0x8F
 
 FEATURE_GAMEPAD = 0x01
 FEATURE_KEYBOARD = 0x02
+FEATURE_WIFI = 0x40  # firmware built with WiFi (SET_WIFI works)
 FEATURE_PACED_TYPING = 0x80  # device paces TYPE keystrokes itself
 MODE_MASK = FEATURE_GAMEPAD | FEATURE_KEYBOARD
 
@@ -134,6 +135,10 @@ class HelloAck:
     def mode(self) -> str:
         mode = self.features & MODE_MASK
         return MODE_NAMES.get(mode, f"unknown ({mode})")
+
+    @property
+    def has_wifi(self) -> bool:
+        return bool(self.features & FEATURE_WIFI)
 
     @property
     def has_paced_typing(self) -> bool:

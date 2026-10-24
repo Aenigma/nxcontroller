@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Build the shareable web flasher into web/: a generic firmware (no WiFi built
-# in, so it starts the setup hotspot) plus an ESP Web Tools manifest.
+# Build the web page into web/ (installer + Bluetooth remote): the firmware it
+# installs (Bluetooth only, no WiFi) plus an ESP Web Tools manifest.
 #
 #   scripts/web.sh            # build into web/
 #   scripts/web.sh --serve    # build, then serve on http://localhost:8700 (PORT=... to change)
@@ -17,8 +17,10 @@ WEB_DIR="$ROOT_DIR/web"
 OUT="$WEB_DIR/firmware"
 mkdir -p "$OUT"
 
-# Deliberately ignore firmware/.env: the published image must not carry your WiFi.
-(cd "$FIRMWARE_DIR" && env -u WIFI_SSID -u WIFI_PASSWORD -u NXC_NAME cargo build --release)
+# Bluetooth only: no setup hotspot, no unauthenticated TCP port. firmware/.env is
+# ignored so the published image never carries your WiFi or name.
+(cd "$FIRMWARE_DIR" && env -u WIFI_SSID -u WIFI_PASSWORD -u NXC_NAME \
+  cargo build --release --no-default-features --features ble)
 
 version="$(sed -n 's/^version *= *"\(.*\)"/\1/p' "$FIRMWARE_DIR/Cargo.toml" | head -1)"
 tmp="$(mktemp -d)"

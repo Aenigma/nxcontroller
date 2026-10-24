@@ -27,7 +27,10 @@ pub async fn handle<'a>(
         Ok(Command::Hello { version }) if version == protocol::PROTOCOL_VERSION => {
             let mut body = [0u8; 34];
             // Mode values are the gamepad/keyboard feature bits.
-            let features = usb::mode() as u8 | feature::PACED_TYPING;
+            let mut features = usb::mode() as u8 | feature::PACED_TYPING;
+            if cfg!(feature = "wifi") {
+                features |= feature::WIFI;
+            }
             let name = &DEVICE_NAME.as_bytes()[..DEVICE_NAME.len().min(32)];
             body[0] = protocol::PROTOCOL_VERSION;
             body[1] = features;
@@ -63,6 +66,9 @@ pub async fn handle<'a>(
                 }
             },
         },
+        Ok(Command::SetWifi { .. }) if !cfg!(feature = "wifi") => {
+            Some(protocol::frame(out, msg::ERROR, &[error::UNSUPPORTED]))
+        }
         Ok(Command::SetWifi { ssid, password }) => {
             match settings.lock().await.set_wifi(ssid, password) {
                 Ok(()) => {
