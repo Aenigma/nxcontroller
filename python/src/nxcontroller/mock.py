@@ -16,6 +16,15 @@ from dataclasses import dataclass, field
 from . import protocol as p
 
 
+# Sample device log. Long enough that the 200-byte frames split a line.
+DEFAULT_LOG = (
+    "boot: nxcontroller mock device, firmware 0.0.0-mock\n"
+    "wifi: joined 'Home Net' at -40 dBm, 192.168.1.50\n"
+    "usb: keyboard and gamepad enumerated (both) \u2192 host configured\n"
+    "tcp: listening on port 7700, one client at a time \u00e9t\u00e9\n"
+)
+
+
 @dataclass
 class MockState:
     buttons: int = 0
@@ -38,10 +47,19 @@ class MockDevice:
         verbose: bool = False,
         paced: bool = True,
         key_time: float = 0.0,
+        logs: bool = True,
+        log_text: str = DEFAULT_LOG,
+        log_chunk: int = p.MAX_LOG_PAYLOAD,
     ):
         """`paced`: advertise and handle TYPE. `key_time`: simulated seconds per
-        keystroke before TYPE_PROGRESS is sent, to exercise client flow control."""
+        keystroke before TYPE_PROGRESS is sent, to exercise client flow control.
+        `logs`: advertise and handle LOGS. `log_text` is the buffered device log;
+        `log_chunk` is the most bytes per LOG frame (small values split characters)."""
         self.state = MockState()
+        self.logs = logs
+        self.log_lines = log_text.splitlines(keepends=True)
+        self.log_chunk = log_chunk
+        self._followers: set[socket.socket] = set()
         self.gamepad = gamepad
         self.keyboard = keyboard
         self.verbose = verbose
@@ -83,6 +101,8 @@ class MockDevice:
             self._serve_frames(conn)
         finally:
             self._typing.put(None)
+            with self._send_lock:
+                self._followers.discard(conn)
 
     def _type_worker(self, conn: socket.socket, work: queue.Queue[int | None]) -> None:
         """Pretend to type queued keystrokes, then report them like the firmware."""
@@ -98,14 +118,17 @@ class MockDevice:
     def _serve_frames(self, conn: socket.socket) -> None:
         buf = b""
         while True:
-            chunk = conn.recv(256)
+            try:
+                chunk = conn.recv(256)
+            except OSError:  # reset by the client
+                break
             if not chunk:
                 break
             buf += chunk
             while len(buf) >= 2 and len(buf) >= 2 + buf[1]:
                 msg_type, length = buf[0], buf[1]
                 payload, buf = buf[2 : 2 + length], buf[2 + length :]
-                reply = self._handle(msg_type, payload)
+                reply = self._handle(msg_type, payload, conn)
                 if reply:
                     with self._send_lock:
                         conn.sendall(reply)
@@ -116,7 +139,7 @@ class MockDevice:
                     return
         self._release_all()
 
-    def _handle(self, msg_type: int, payload: bytes) -> bytes | None:
+    def _handle(self, msg_type: int, payload: bytes, conn: socket.socket) -> bytes | None:
         s = self.state
         s.log.append((msg_type, payload))
         if msg_type == p.MSG_HELLO:
@@ -124,6 +147,7 @@ class MockDevice:
                 return p.frame(p.MSG_ERROR, b"\x04")
             features = (p.FEATURE_GAMEPAD if self.gamepad else 0) | (p.FEATURE_KEYBOARD if self.keyboard else 0)
             features |= p.FEATURE_PACED_TYPING if self.paced else 0
+            features |= p.FEATURE_LOGS if self.logs else 0
             features |= p.FEATURE_WIFI  # it's reached over TCP, so it has WiFi
             return p.frame(p.MSG_HELLO_ACK, bytes((p.PROTOCOL_VERSION, features)) + b"mock")
         if msg_type == p.MSG_SET_MODE and len(payload) == 1:
@@ -142,6 +166,16 @@ class MockDevice:
             self.wifi = (payload[1 : 1 + ssid_len].decode(), payload[1 + ssid_len :].decode())
             self._restart = True
             return p.frame(p.MSG_WIFI_ACK)
+        if msg_type == p.MSG_LOGS and len(payload) == 1:
+            if not self.logs:
+                return p.frame(p.MSG_ERROR, b"\x01")
+            with self._send_lock:  # replay and follower change happen before any emit_log
+                if payload[0]:
+                    self._followers.add(conn)
+                else:
+                    self._followers.discard(conn)
+                conn.sendall(self._log_frames("".join(self.log_lines)))
+            return None
         if msg_type == p.MSG_PING and len(payload) == 4:
             return p.frame(p.MSG_PONG, payload + b"\x01")
         if msg_type == p.MSG_GAMEPAD and len(payload) == 7:
@@ -186,6 +220,23 @@ class MockDevice:
             return None
         known = {p.MSG_HELLO, p.MSG_PING, p.MSG_SET_MODE, p.MSG_SET_WIFI, p.MSG_SET_OPTION, p.MSG_GAMEPAD, p.MSG_KEYBOARD, p.MSG_RELEASE_ALL}
         return p.frame(p.MSG_ERROR, b"\x02" if msg_type in known else b"\x01")
+
+    def emit_log(self, text: str) -> None:
+        """Add text to the device log and send it to clients following the log."""
+        with self._send_lock:
+            self.log_lines.append(text)
+            frames = self._log_frames(text)
+            for conn in list(self._followers):
+                try:
+                    conn.sendall(frames)
+                except OSError:
+                    self._followers.discard(conn)
+
+    def _log_frames(self, text: str) -> bytes:
+        """LOG frames carrying `text`, each at most `log_chunk` bytes (may split characters)."""
+        data = text.encode()
+        size = self.log_chunk
+        return b"".join(p.frame(p.MSG_LOG, data[i : i + size]) for i in range(0, len(data), size))
 
     def _release_all(self) -> None:
         self.state.buttons, self.state.hat = 0, 8

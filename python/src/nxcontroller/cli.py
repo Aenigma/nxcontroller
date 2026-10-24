@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from contextlib import closing
 
 from . import protocol as p
 from .client import Controller, NXError
@@ -14,6 +15,16 @@ def _connect(args: argparse.Namespace) -> Controller:
     if args.host:
         return Controller.connect(args.host, args.port)
     return Controller.discover_one()
+
+
+def _follow_logs(nx: Controller) -> None:
+    """Print the device log, then new output as it arrives, until Ctrl-C."""
+    with closing(nx.follow_logs()) as lines:
+        try:
+            for text in lines:
+                print(text, end="", flush=True)
+        except KeyboardInterrupt:
+            pass
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -43,6 +54,8 @@ def main(argv: list[str] | None = None) -> int:
     poll.add_argument("ms", type=int)
     key = sub.add_parser("key", help="tap a key, e.g. `nxc key enter`")
     key.add_argument("keys", nargs="+")
+    logs = sub.add_parser("logs", help="print the device log")
+    logs.add_argument("-f", "--follow", action="store_true", help="keep printing new output until Ctrl-C")
     mock = sub.add_parser("mock-device", help="run a fake device on localhost for testing")
     mock.add_argument("--bind", default="127.0.0.1")
     only = mock.add_mutually_exclusive_group()
@@ -111,6 +124,11 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"done ({args.ms or 5} ms)")
             elif args.cmd == "key":
                 nx.key_tap(*args.keys)
+            elif args.cmd == "logs":
+                if args.follow:
+                    _follow_logs(nx)
+                else:
+                    print(nx.logs(), end="")
     except (NXError, OSError, ValueError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1

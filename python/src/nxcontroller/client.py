@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import codecs
 import queue
 import socket
 import threading
 import time
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Iterator
 
 from . import protocol as p
 from .inputs import (
@@ -72,6 +73,7 @@ class Controller:
         self._seq = 0
         self._typed = 0  # keystrokes the device reports finished (TYPE_PROGRESS)
         self._typed_cond = threading.Condition()
+        self._log_sink: queue.Queue[bytes | None] | None = None  # set while logs() or follow_logs() runs
         self._reset_state()
         self._attach(sock)
 
@@ -409,6 +411,74 @@ class Controller:
         sock.settimeout(None)
         return sock
 
+    # ------------------------------------------------------------ device log
+
+    def logs(self, timeout: float = 1.0) -> str:
+        """The device's buffered log, oldest first.
+
+        Returns once no new text has arrived for `timeout` seconds.
+        """
+        q = self._start_logs(follow=False)
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        parts: list[str] = []
+        try:
+            while True:
+                parts.append(decoder.decode(self._next_log(q, timeout)))
+        except queue.Empty:
+            pass
+        finally:
+            self._end_logs(q)
+        parts.append(decoder.decode(b"", final=True))
+        return "".join(parts)
+
+    def follow_logs(self) -> Iterator[str]:
+        """Yield the device log: the buffered text, then new output as it arrives.
+
+        Chunks may end in the middle of a line. Closing the returned iterator (or
+        breaking out of the loop over it) tells the device to stop following.
+        """
+        return self._follow(self._start_logs(follow=True))
+
+    def _follow(self, q: queue.Queue[bytes | None]) -> Iterator[str]:
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        try:
+            while True:
+                text = decoder.decode(self._next_log(q, None))
+                if text:
+                    yield text
+        finally:
+            self._end_logs(q)
+            try:
+                self._send(p.encode_logs(False))
+            except (NXError, OSError):
+                pass  # the connection is already gone
+
+    def _start_logs(self, follow: bool) -> queue.Queue[bytes | None]:
+        if not self.info.has_logs:
+            raise NXError("this firmware build has no device log (LOGS)")
+        q: queue.Queue[bytes | None] = queue.Queue()
+        self._log_sink = q
+        try:
+            if not self._reader.is_alive():  # the connection dropped before the sink was set
+                raise NXError("connection lost")
+            self._send(p.encode_logs(follow))
+        except BaseException:
+            self._end_logs(q)
+            raise
+        return q
+
+    def _end_logs(self, q: queue.Queue[bytes | None]) -> None:
+        if self._log_sink is q:
+            self._log_sink = None
+
+    @staticmethod
+    def _next_log(q: queue.Queue[bytes | None], timeout: float | None) -> bytes:
+        """Next log chunk. Raises queue.Empty on timeout and NXError if the connection drops."""
+        chunk = q.get(timeout=timeout)
+        if chunk is None:
+            raise NXError("connection lost while reading the device log")
+        return chunk
+
     # ----------------------------------------------------------- internals
 
     def _send_gamepad(self) -> None:
@@ -469,6 +539,10 @@ class Controller:
                     with self._typed_cond:
                         self._typed += msg.count
                         self._typed_cond.notify_all()
+                elif isinstance(msg, p.LogChunk):
+                    sink = self._log_sink  # dropped if no logs() or follow_logs() is waiting
+                    if sink is not None:
+                        sink.put(msg.data)
                 elif isinstance(msg, p.DeviceError) and not self._waiting:
                     # Errors for fire-and-forget messages surface on the next call.
                     self._async_error = msg
@@ -476,3 +550,6 @@ class Controller:
                         self._typed_cond.notify_all()
                 else:
                     replies.put(msg)
+        sink = self._log_sink
+        if sink is not None:
+            sink.put(None)  # wake a logs() or follow_logs() call so it can fail

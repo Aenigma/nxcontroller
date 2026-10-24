@@ -15,6 +15,10 @@ with Controller.discover_one() as nx:       # or Controller.connect("192.168.1.5
 To develop without hardware, run `uv run nxc mock-device --port 7700` in one terminal and
 `uv run nxc --host 127.0.0.1 ping` in another.
 
+To read the device's log, `uv run nxc logs` prints what it has buffered, and `uv run nxc logs -f`
+keeps printing new output until Ctrl-C. In Python, `nx.logs()` returns the buffered text and
+`nx.follow_logs()` yields it as it arrives.
+
 ## Examples
 
 - `examples/typing_demo.py` shows off the keyboard: fast exact typing, human-like rhythm,

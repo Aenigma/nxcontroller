@@ -1,3 +1,5 @@
+import socket
+import threading
 import time
 
 import pytest
@@ -5,7 +7,7 @@ import pytest
 from nxcontroller import Button, Controller, Hat, Key, Modifier, NXError
 from nxcontroller import protocol as p
 from nxcontroller.inputs import char_to_key
-from nxcontroller.mock import MockDevice
+from nxcontroller.mock import DEFAULT_LOG, MockDevice
 
 
 @pytest.fixture
@@ -222,3 +224,131 @@ def test_enter_is_typed_alone_after_a_release(device):
             assert pl[0] == 0 and pl[1] >= 20 and pl[2] >= 20  # no rollover, held longer
             prev_t, prev_pl = msgs[i - 1]
             assert prev_t == p.MSG_KEYBOARD and prev_pl == bytes(7)  # everything released first
+
+
+def run_with_timeout(fn, timeout=2.0):
+    """Call `fn` in a thread and fail the test instead of hanging if it never returns."""
+    result: dict = {}
+
+    def target() -> None:
+        try:
+            result["value"] = fn()
+        except BaseException as e:
+            result["error"] = e
+
+    t = threading.Thread(target=target, daemon=True)
+    t.start()
+    t.join(timeout)
+    assert not t.is_alive(), "timed out"
+    if "error" in result:
+        raise result["error"]
+    return result["value"]
+
+
+def read_until(stream, text: str) -> str:
+    """Collect followed log text until it ends with `text`."""
+
+    def consume() -> str:
+        out = ""
+        for chunk in stream:
+            out += chunk
+            if out.endswith(text):
+                return out
+        return out
+
+    out = run_with_timeout(consume)
+    assert out.endswith(text), out
+    return out
+
+
+def test_encode_logs():
+    assert p.encode_logs(False) == bytes([0x06, 1, 0])
+    assert p.encode_logs(True) == bytes([0x06, 1, 1])
+    assert p.decode(p.MSG_LOG, b"") == p.LogChunk(b"")
+
+
+def test_logs_buffered(device):
+    with Controller.connect(device.host, device.port) as nx:
+        assert nx.info.has_logs
+        assert nx.logs(timeout=0.2) == DEFAULT_LOG  # 221 bytes: split at 200 mid-line
+
+
+def test_logs_split_inside_multibyte_character():
+    text = "h\u00e9llo w\u00f6rld\n\u2192 second line\n"
+    dev = MockDevice(log_text=text, log_chunk=2).start()  # every 2nd byte ends a frame
+    try:
+        pieces = [text.encode()[i : i + 2] for i in range(0, len(text.encode()), 2)]
+        assert any(piece.endswith(b"\xc3") for piece in pieces)  # a split inside "é"
+        with Controller.connect(dev.host, dev.port) as nx:
+            assert nx.logs(timeout=0.2) == text
+    finally:
+        dev.stop()
+
+
+def test_logs_empty_buffer():
+    dev = MockDevice(log_text="").start()
+    try:
+        with Controller.connect(dev.host, dev.port) as nx:
+            assert nx.logs(timeout=0.1) == ""
+    finally:
+        dev.stop()
+
+
+def test_follow_logs_receives_new_output(device):
+    with Controller.connect(device.host, device.port) as nx:
+        stream = nx.follow_logs()
+        read_until(stream, DEFAULT_LOG)
+        device.emit_log("new line from the device\n")
+        read_until(stream, "new line from the device\n")
+        stream.close()
+
+
+def test_follow_stop_sends_logs_0(device):
+    with Controller.connect(device.host, device.port) as nx:
+        stream = nx.follow_logs()
+        read_until(stream, DEFAULT_LOG)
+        stream.close()
+        wait_for(lambda: [pl for t, pl in device.state.log if t == p.MSG_LOGS][-1:] == [b"\x00"])
+        assert [pl for t, pl in device.state.log if t == p.MSG_LOGS] == [b"\x01", b"\x00"]
+        assert nx.logs(timeout=0.2) == DEFAULT_LOG  # the connection still works
+
+
+def test_follow_logs_fails_when_connection_drops(device):
+    with Controller.connect(device.host, device.port) as nx:
+        stream = nx.follow_logs()
+        read_until(stream, DEFAULT_LOG)
+        for conn in list(device._followers):
+            conn.shutdown(socket.SHUT_RDWR)  # the device goes away mid-stream
+        with pytest.raises(NXError, match="connection lost"):
+            run_with_timeout(lambda: list(stream))
+
+
+def test_logs_without_feature_raises():
+    dev = MockDevice(logs=False).start()
+    try:
+        with Controller.connect(dev.host, dev.port) as nx:
+            assert not nx.info.has_logs
+            with pytest.raises(NXError, match="no device log"):
+                nx.logs()
+            with pytest.raises(NXError, match="no device log"):
+                nx.follow_logs()
+            assert nx.ping()[1]  # the connection is still usable
+    finally:
+        dev.stop()
+
+
+def test_log_frames_do_not_disturb_ping(device):
+    with Controller.connect(device.host, device.port) as nx:
+        stream = nx.follow_logs()
+        read_until(stream, DEFAULT_LOG)
+
+        def emit() -> None:
+            for i in range(50):
+                device.emit_log(f"line {i}: {'x' * 150}\n")
+
+        emitter = threading.Thread(target=emit)
+        emitter.start()
+        for _ in range(20):
+            nx.ping()  # would raise if a LOG frame were taken for the PONG
+        emitter.join()
+        stream.close()

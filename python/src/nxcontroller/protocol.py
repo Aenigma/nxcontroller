@@ -18,6 +18,7 @@ MSG_PING = 0x02
 MSG_SET_MODE = 0x03
 MSG_SET_WIFI = 0x04
 MSG_SET_OPTION = 0x05
+MSG_LOGS = 0x06
 MSG_GAMEPAD = 0x10
 MSG_KEYBOARD = 0x11
 MSG_TYPE = 0x12
@@ -30,10 +31,12 @@ MSG_MODE_ACK = 0x83
 MSG_WIFI_ACK = 0x84
 MSG_TYPE_PROGRESS = 0x85
 MSG_OPTION_ACK = 0x86
+MSG_LOG = 0x87
 MSG_ERROR = 0x8F
 
 FEATURE_GAMEPAD = 0x01
 FEATURE_KEYBOARD = 0x02
+FEATURE_LOGS = 0x20  # device keeps a log (LOGS works)
 FEATURE_WIFI = 0x40  # firmware built with WiFi (SET_WIFI works)
 FEATURE_PACED_TYPING = 0x80  # device paces TYPE keystrokes itself
 MODE_MASK = FEATURE_GAMEPAD | FEATURE_KEYBOARD
@@ -42,6 +45,9 @@ MODE_MASK = FEATURE_GAMEPAD | FEATURE_KEYBOARD
 MAX_TYPE_KEYS = 126
 # TYPE flags
 TYPE_ROLLOVER = 0x01  # go straight to the next key when no release is needed
+
+# LOG payloads are at most this many bytes
+MAX_LOG_PAYLOAD = 200
 
 # SET_OPTION ids
 OPTION_KEYBOARD_POLL_MS = 1
@@ -117,6 +123,11 @@ def encode_release_all() -> bytes:
     return frame(MSG_RELEASE_ALL)
 
 
+def encode_logs(follow: bool) -> bytes:
+    """Ask for the device log; with `follow`, keep sending new output too."""
+    return frame(MSG_LOGS, bytes((1 if follow else 0,)))
+
+
 @dataclass(frozen=True)
 class HelloAck:
     proto_version: int
@@ -135,6 +146,10 @@ class HelloAck:
     def mode(self) -> str:
         mode = self.features & MODE_MASK
         return MODE_NAMES.get(mode, f"unknown ({mode})")
+
+    @property
+    def has_logs(self) -> bool:
+        return bool(self.features & FEATURE_LOGS)
 
     @property
     def has_wifi(self) -> bool:
@@ -175,6 +190,11 @@ class TypeProgress:
 
 
 @dataclass(frozen=True)
+class LogChunk:
+    data: bytes  # UTF-8 text fragment; lines may be split across chunks
+
+
+@dataclass(frozen=True)
 class DeviceError:
     code: int
 
@@ -183,7 +203,7 @@ class DeviceError:
         return ERROR_NAMES.get(self.code, f"error {self.code}")
 
 
-Message = HelloAck | Pong | ModeAck | WifiAck | OptionAck | TypeProgress | DeviceError
+Message = HelloAck | Pong | ModeAck | WifiAck | OptionAck | TypeProgress | LogChunk | DeviceError
 
 
 def decode(msg_type: int, payload: bytes) -> Message:
@@ -200,6 +220,8 @@ def decode(msg_type: int, payload: bytes) -> Message:
         return OptionAck(payload[0], payload[1], bool(payload[2]))
     if msg_type == MSG_TYPE_PROGRESS and len(payload) == 2:
         return TypeProgress(struct.unpack("<H", payload)[0])
+    if msg_type == MSG_LOG:
+        return LogChunk(bytes(payload))
     if msg_type == MSG_ERROR and len(payload) == 1:
         return DeviceError(payload[0])
     raise ValueError(f"unexpected message 0x{msg_type:02x} ({len(payload)} bytes)")
