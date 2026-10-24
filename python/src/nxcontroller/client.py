@@ -26,12 +26,22 @@ KeyLike = Key | str
 
 DEFAULT_TAP = 0.1  # seconds held for a tap
 DEFAULT_GAP = 0.05  # seconds released after a tap
+# Minimum hold per key state for type_text. 20 ms typed a 229-line file into a
+# Switch 2 text field without losses; 0 is fastest (fine on a Mac).
+DEFAULT_TYPE_INTERVAL = 0.02
 
 # Keystrokes the client lets the device buffer at once. The device's queue holds
 # 512, so this leaves room for KEYBOARD state messages sent meanwhile.
 TYPE_WINDOW = 256
 # Give up if the device reports no typing progress for this long.
 TYPE_STALL_TIMEOUT = 5.0
+# Keys that some hosts (the Switch 2's text field) miss when rolled into or held
+# briefly. They're typed on their own: everything released first, then held for
+# at least this long.
+CAREFUL_KEYS = {int(Key.ENTER)}
+CAREFUL_HOLD = 0.02
+# Minimum Caps Lock press for key_tap; shorter taps get ignored.
+CAPS_LOCK_HOLD = 0.2
 
 
 class NXError(Exception):
@@ -207,6 +217,9 @@ class Controller:
         duration: float = 0.03,
         gap: float = 0.03,
     ) -> None:
+        if any(parse_key(k) == Key.CAPS_LOCK for k in keys):
+            # macOS (and maybe other hosts) ignore very short Caps Lock taps.
+            duration = max(duration, CAPS_LOCK_HOLD)
         self.key_down(*keys, modifiers=modifiers)
         time.sleep(duration)
         self.key_up(*keys, modifiers=modifiers)
@@ -215,7 +228,7 @@ class Controller:
     def type_text(
         self,
         text: str,
-        interval: float = 0.0,
+        interval: float = DEFAULT_TYPE_INTERVAL,
         on_progress: Callable[[int, int], None] | None = None,
         rollover: bool = True,
     ) -> None:
@@ -226,7 +239,8 @@ class Controller:
         than the board can buffer. So no keystroke is dropped, however fast this
         runs. `interval` adds a minimum time (seconds, up to 0.255) that each key
         stays pressed and released, for apps that only check the keyboard once
-        per frame. 0 means as fast as the host reads reports.
+        per frame. The default (0.02) suits the Switch 2; 0 means as fast as the host
+        reads reports.
 
         `on_progress(done, total)` is called as keystrokes complete.
 
@@ -266,7 +280,17 @@ class Controller:
             if done >= total:
                 return
             if sent < total and room > 0:
+                if keys[sent][1] in CAREFUL_KEYS:
+                    # Release whatever rollover left down (KEYBOARD states share the
+                    # board's ordered queue), then type this key alone, held longer.
+                    self._send(p.encode_keyboard(0, []))
+                    careful_ms = max(hold_ms, round(CAREFUL_HOLD * 1000))
+                    self._send(p.encode_type(0, careful_ms, careful_ms, keys[sent : sent + 1]))
+                    sent += 1
+                    continue
                 n = min(room, p.MAX_TYPE_KEYS, total - sent)
+                # Stop each batch before the next careful key.
+                n = next((i for i in range(n) if keys[sent + i][1] in CAREFUL_KEYS), n)
                 flags = p.TYPE_ROLLOVER if rollover else 0
                 self._send(p.encode_type(flags, hold_ms, hold_ms, keys[sent : sent + n]))
                 sent += n

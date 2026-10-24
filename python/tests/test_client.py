@@ -157,9 +157,12 @@ def test_type_text_paced(device):
         nx.type_text(SAMPLE, interval=0.004)
     assert _decode_typed(device.state.typed) == SAMPLE
     type_msgs = [pl for t, pl in device.state.log if t == p.MSG_TYPE]
-    assert all(pl[:3] == bytes((p.TYPE_ROLLOVER, 4, 4)) for pl in type_msgs)  # rollover is the default
-    # Paced typing never falls back to per-key KEYBOARD messages.
-    assert not [t for t, _ in device.state.log if t == p.MSG_KEYBOARD]
+    regular = [pl for pl in type_msgs if pl[4] != int(Key.ENTER)]  # Enter goes alone, see below
+    assert regular and all(pl[:3] == bytes((p.TYPE_ROLLOVER, 4, 4)) for pl in regular)  # rollover is the default
+    # Paced typing never falls back to per-key KEYBOARD messages; the only ones are
+    # the all-released states sent before each Enter.
+    kb = [pl for t, pl in device.state.log if t == p.MSG_KEYBOARD]
+    assert len(kb) == SAMPLE.count("\n") and all(pl == bytes(7) for pl in kb)
 
 
 def test_type_text_flow_control_with_slow_device():
@@ -205,3 +208,17 @@ def test_set_keyboard_poll_ms_restarts_and_reconnects(device):
         nx.set_keyboard_poll_ms(1)  # unchanged: no restart
         nx.type_text("ok")
     assert _decode_typed(device.state.typed) == "ok"
+
+
+def test_enter_is_typed_alone_after_a_release(device):
+    with Controller.connect(device.host, device.port) as nx:
+        nx.type_text("ab\ncd\n\nx")
+    assert _decode_typed(device.state.typed) == "ab\ncd\n\nx"
+    msgs = [(t, pl) for t, pl in device.state.log if t in (p.MSG_TYPE, p.MSG_KEYBOARD)]
+    for i, (t, pl) in enumerate(msgs):
+        keys = [pl[j + 1] for j in range(3, len(pl), 2)] if t == p.MSG_TYPE else []
+        if int(Key.ENTER) in keys:
+            assert keys == [int(Key.ENTER)]  # alone in its message
+            assert pl[0] == 0 and pl[1] >= 20 and pl[2] >= 20  # no rollover, held longer
+            prev_t, prev_pl = msgs[i - 1]
+            assert prev_t == p.MSG_KEYBOARD and prev_pl == bytes(7)  # everything released first

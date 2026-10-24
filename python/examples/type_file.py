@@ -59,9 +59,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("file", nargs="?", default="-", help="text file to type (default: stdin)")
     parser.add_argument("--host", help="device IP (default: auto-discover)")
-    parser.add_argument("--interval", type=float, default=0.0,
-                        help="minimum seconds each key stays pressed and released (max 0.255). "
-                             "0 = as fast as the USB host reads; raise it if an app drops keys")
+    parser.add_argument("--interval", type=float, default=0.02,
+                        help="minimum seconds each key stays pressed and released (max 0.255; default 0.02, "
+                             "which a Switch 2 needed). 0 = as fast as the USB host reads")
     parser.add_argument("--countdown", type=int, default=5, help="seconds to focus the target window")
     parser.add_argument("--no-rollover", action="store_true",
                         help="release every key before the next one (slower; try it if a host misreads keys)")

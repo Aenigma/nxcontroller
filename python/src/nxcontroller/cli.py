@@ -37,7 +37,7 @@ def main(argv: list[str] | None = None) -> int:
     dpad.add_argument("direction")
     type_ = sub.add_parser("type", help="type text on the USB keyboard")
     type_.add_argument("text")
-    type_.add_argument("--interval", type=float, default=0.0, help="minimum seconds per key state (default: as fast as possible)")
+    type_.add_argument("--interval", type=float, default=0.02, help="minimum seconds per key state (default 0.02; 0 = as fast as possible)")
     type_.add_argument("--no-rollover", action="store_true", help="release every key before the next one")
     poll = sub.add_parser("keyboard-poll", help="set the USB keyboard poll interval in ms (1-255, 0 = default 5); restarts the board")
     poll.add_argument("ms", type=int)
