@@ -49,6 +49,7 @@ Every message, in both directions, has the same shape:
 | `0x10` | GAMEPAD      | `buttons: u16, hat: u8, lx: u8, ly: u8, rx: u8, ry: u8`  |
 | `0x11` | KEYBOARD     | `modifiers: u8, keys: [u8; 6]`                           |
 | `0x05` | SET_OPTION   | `option: u8, value: u8`                                  |
+| `0x06` | LOGS         | `follow: u8`                                             |
 | `0x12` | TYPE         | `flags: u8, press_ms: u8, release_ms: u8, (modifiers: u8, key: u8)[..126]` |
 | `0x1F` | RELEASE_ALL  | *(empty)*                                                |
 
@@ -69,10 +70,11 @@ check that the link is up.
 | `0x84` | WIFI_ACK   | *(empty)*                                                     |
 | `0x85` | TYPE_PROGRESS | `count: u16` (keystrokes finished since the last one)      |
 | `0x86` | OPTION_ACK | `option: u8, value: u8, restarting: u8`                       |
+| `0x87` | LOG        | `text: utf8[..]` (part of the device's log)                   |
 | `0x8F` | ERROR      | `code: u8`                                                    |
 
-`features` bit flags: `0x01` gamepad, `0x02` keyboard, `0x40` WiFi built in,
-`0x80` paced typing (TYPE). The low two bits reflect the current USB mode, and mode
+`features` bit flags: `0x01` gamepad, `0x02` keyboard, `0x20` logs (LOGS),
+`0x40` WiFi built in, `0x80` paced typing (TYPE). The low two bits reflect the current USB mode, and mode
 values use the same bits.
 
 `usb_configured` is `1` once the USB host (Switch or PC) has enumerated the device.
@@ -119,6 +121,16 @@ with `TYPE_PROGRESS`, sent while the client is idle, and coalesced. Clients
 should keep at most 256 keystrokes outstanding (sent minus reported). A TYPE that
 doesn't fit is rejected whole with error `7`. RELEASE_ALL and disconnecting clear the
 queue, so typing stops within about one keystroke.
+
+## Logs (LOGS)
+
+The device keeps its most recent log output (about 8 KB) in memory. `LOGS` asks for
+it: the device sends everything it has as `LOG` frames, oldest first. With
+`follow = 1` it then keeps sending new output as `LOG` frames, until the client
+sends `LOGS` with `follow = 0` or disconnects. `LOG` payloads are UTF-8 text of
+at most 200 bytes. Lines end with `\n`, and a line may be split across frames, so
+clients concatenate the payloads. If older output was dropped to make room, the
+first frame starts with `…\n`.
 
 ## Options (SET_OPTION)
 
