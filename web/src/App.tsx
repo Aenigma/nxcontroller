@@ -21,12 +21,11 @@ const CONNECTED_KEY = "nxcontroller.connected-before";
 const remembered = (): boolean => { try { return localStorage.getItem(CONNECTED_KEY) === "1"; } catch { return false; } };
 const remember = () => { try { localStorage.setItem(CONNECTED_KEY, "1"); } catch { /* storage unavailable */ } };
 
-/** The tab named in the URL (#control / #setup), else Control once a board has connected, else Setup. */
-function initialTab(): Tab {
-  const hash = location.hash.slice(1);
-  if (hash === "control" || hash === "setup") return hash;
-  return remembered() ? "control" : "setup";
-}
+/** The tab named in the URL hash (#control / #setup), if any. */
+const parseTab = (): Tab | undefined => TABS.find((t) => `#${t.id}` === location.hash)?.id;
+
+/** The tab in the URL, else Control once a board has connected, else Setup. */
+const initialTab = (): Tab => parseTab() ?? (remembered() ? "control" : "setup");
 
 export function App() {
   const unsupported = !navigator.bluetooth;
@@ -47,19 +46,15 @@ export function App() {
     history.replaceState(null, "", `#${t}`);
   };
   useEffect(() => {
-    const onHash = () => { const h = location.hash.slice(1); if (h === "control" || h === "setup") setTabState(h); };
+    const onHash = () => { const t = parseTab(); if (t) setTabState(t); };
     addEventListener("hashchange", onHash);
     return () => removeEventListener("hashchange", onHash);
   }, []);
 
   // Stream the board's log only while the Setup tab (where the Logs section lives) is open,
-  // so nothing extra travels over Bluetooth while you play.
-  const wantLogs = tab === "setup" && online && !!(features & FEATURE.LOGS);
-  useEffect(() => {
-    if (!link) return;
-    if (wantLogs) logs.reset(); // the board replays everything it has first
-    void link.followLogs(wantLogs);
-  }, [link, wantLogs]);
+  // so nothing extra travels over Bluetooth while you play, and not during paced typing.
+  // Link sends the request whenever the board can act on it, including after restarts.
+  useEffect(() => { void link?.followLogs(tab === "setup" && !typing); }, [link, tab, typing]);
 
   const setStatus = (msg: string, cls = "muted") => setStatusState({ msg, cls });
 
@@ -86,7 +81,7 @@ export function App() {
       const l = new Link({
         onDisconnect: () => { setStatus("Disconnected.", "status-bad"); refresh(); },
         onLog: (payload) => logs.push(payload),
-        onOpen: () => logs.reset(), // after a restart, a followed log replays from the start
+        onLogReplay: () => logs.reset(),
       });
       linkRef.current = l;
       setLink(l);
@@ -123,8 +118,8 @@ export function App() {
     }
   };
 
-  const gamepad = online && !!(features & FEATURE.GAMEPAD);
-  const keyboard = online && !!(features & FEATURE.KEYBOARD);
+  // What the connected board can do (features is 0 while disconnected).
+  const has = (flag: number) => !!(features & flag);
 
   return (
     <main>
@@ -150,11 +145,11 @@ export function App() {
 
       <div role="tabpanel" hidden={tab !== "control"}>
         {!online && (
-          <p class="muted hint">Connect your board to use it as a gamepad or keyboard.
+          <p class="muted intro">Connect your board to use it as a gamepad or keyboard.
             New board? Install the firmware in <a href="#setup" onClick={(e) => { e.preventDefault(); setTab("setup"); }}>Setup</a>.</p>
         )}
-        <Gamepad link={link} active={gamepad} />
-        <TypeText link={link} active={keyboard} online={online} typing={typing} setTyping={setTyping} />
+        <Gamepad link={link} active={has(FEATURE.GAMEPAD)} />
+        <TypeText link={link} active={has(FEATURE.KEYBOARD)} online={online} typing={typing} setTyping={setTyping} />
       </div>
 
       <div role="tabpanel" hidden={tab !== "setup"}>
@@ -163,8 +158,8 @@ export function App() {
           online={online} typing={typing} applying={applying}
           mode={mode} onMode={setMode} onApply={applyMode}
         />
-        <Wifi active={online && !!(features & FEATURE.WIFI)} online={online} typing={typing} onSave={saveWifi} />
-        <Logs active={online && !!(features & FEATURE.LOGS)} buffer={logs} />
+        <Wifi active={has(FEATURE.WIFI)} online={online} typing={typing} onSave={saveWifi} />
+        <Logs active={has(FEATURE.LOGS)} buffer={logs} />
         <Help />
       </div>
     </main>

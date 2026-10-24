@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { Link } from "./link";
 import { LogBuffer } from "./logs";
-import { MSG, frame } from "./protocol";
+import { FEATURE, MSG, frame } from "./protocol";
 
 const utf8 = (s: string) => new TextEncoder().encode(s);
 
@@ -61,10 +61,15 @@ describe("Link on a simulated board", () => {
     expect(logs.text).toBe("hello world\n");
   });
 
-  it("asks for the log with follow = 1", async () => {
+  it("follows the log on demand, once per change, announcing the replay", async () => {
     const { link, written } = simulated();
-    await link.requestLogs(true);
-    await link.requestLogs(false);
+    let replays = 0;
+    (link as unknown as { events: { onLogReplay(): void } }).events.onLogReplay = () => { replays++; };
+    Object.assign(link, { device: { gatt: { connected: true } }, info: { features: FEATURE.LOGS, version: 1, name: "t" } });
+    await link.followLogs(true);
+    await link.followLogs(true); // no change: nothing sent
+    await link.followLogs(false);
     expect(written.map((w) => [...w])).toEqual([[MSG.LOGS, 1, 1], [MSG.LOGS, 1, 0]]);
+    expect(replays).toBe(1);
   });
 });

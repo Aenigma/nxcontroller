@@ -12,8 +12,8 @@ export interface LinkEvents {
   onDisconnect(): void;
   /** A LOG frame arrived (any time after LOGS was requested). */
   onLog?(payload: Uint8Array): void;
-  /** A fresh connection was opened and the board said HELLO; the log replays from the start. */
-  onOpen?(info: DeviceInfo): void;
+  /** The board is about to replay its log from the start (we asked to follow it): clear what's shown. */
+  onLogReplay?(): void;
 }
 
 export interface TypeOptions {
@@ -82,11 +82,8 @@ export class Link {
     const info = parseHelloAck(ack);
     this.info = info;
     this.opened++;
-    this.events.onOpen?.(info);
-    if (this.logFollow && info.features & FEATURE.LOGS) {
-      // Reconnected after a restart while following: ask again.
-      await this.requestLogs(true).catch(() => {});
-    }
+    // A new connection (e.g. after a restart) while following: ask again.
+    if (this.logFollow && info.features & FEATURE.LOGS) await this.sendLogs(true);
     return info;
   }
 
@@ -166,14 +163,19 @@ export class Link {
     await this.reconnectAfterRestart();
   }
 
-  /** Ask for the board's log; with `follow`, it keeps streaming new output. */
-  requestLogs(follow: boolean): Promise<void> { return this.send(frame(MSG.LOGS, [follow ? 1 : 0])); }
-
-  /** Stream the board's log (it replays everything it has first), or stop. No ack. */
+  /**
+   * Whether to stream the board's log. Kept across reconnects; sent whenever the
+   * board can act on it. Following replays everything the board has first. No ack.
+   */
   async followLogs(on: boolean): Promise<void> {
     if (on === this.logFollow) return;
     this.logFollow = on;
-    if (this.connected && this.features & FEATURE.LOGS) await this.requestLogs(on).catch(() => {});
+    if (this.connected && this.features & FEATURE.LOGS) await this.sendLogs(on);
+  }
+
+  private async sendLogs(follow: boolean): Promise<void> {
+    if (follow) this.events.onLogReplay?.();
+    await this.send(frame(MSG.LOGS, [follow ? 1 : 0])).catch(() => {});
   }
 
   /** The board saved a setting and is restarting: wait for it and reconnect. */

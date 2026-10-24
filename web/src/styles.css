@@ -113,4 +113,3 @@ kbd {
 }
 .tabs button[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); }
 .tabs button:hover { color: var(--fg); }
-.hint { margin: 0 0 16px; }
