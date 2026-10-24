@@ -1,0 +1,25 @@
+{
+  "name": "nxcontroller-web",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "packageManager": "pnpm@12.15.0",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 8700",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "esp-web-tools": "10.4.0",
+    "preact": "11.0.2"
+  },
+  "devDependencies": {
+    "@preact/preset-vite": "2.10.6",
+    "@types/web-bluetooth": "0.0.22",
+    "typescript": "7.0.2",
+    "vite": "8.3.5",
+    "vitest": "5.0.5"
+  }
+}

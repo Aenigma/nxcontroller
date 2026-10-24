@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# Build the web page into web/ (installer + Bluetooth remote): the firmware it
-# installs (Bluetooth only, no WiFi) plus an ESP Web Tools manifest.
+# Build the web page into web/dist (installer + Bluetooth remote): the firmware it
+# installs (Bluetooth only, no WiFi) plus an ESP Web Tools manifest go into
+# web/public/, then Vite builds the Preact page around them.
 #
-#   scripts/web.sh            # build into web/
+#   scripts/web.sh            # build into web/dist
 #   scripts/web.sh --serve    # build, then serve on http://localhost:8700 (PORT=... to change)
 #
-# Web Serial only works on https or localhost. To share it, host web/ on any
-# static https host (GitHub Pages, Netlify, ...).
+# Web Serial only works on https or localhost. To share it, host web/dist on any
+# static https host (GitHub Pages, Netlify, ...). To work on the page itself, run
+# `pnpm dev` in web/ (needs pnpm and Node; the firmware images are optional there).
 set -euo pipefail
 . "$(dirname "$0")/_env.sh"
 
@@ -14,7 +16,7 @@ serve=0
 [ "${1:-}" = "--serve" ] && serve=1
 
 WEB_DIR="$ROOT_DIR/web"
-OUT="$WEB_DIR/firmware"
+OUT="$WEB_DIR/public/firmware"
 mkdir -p "$OUT"
 
 # Bluetooth only: no setup hotspot, no unauthenticated TCP port. firmware/.env is
@@ -37,7 +39,7 @@ open(f"{sys.argv[2]}/bootloader.bin", "wb").write(merged[0x0:0x8000])
 open(f"{sys.argv[2]}/partitions.bin", "wb").write(merged[0x8000:0x9000])
 EOF
 
-cat > "$WEB_DIR/manifest.json" <<EOF
+cat > "$WEB_DIR/public/manifest.json" <<EOF
 {
   "name": "nxcontroller",
   "version": "$version",
@@ -55,9 +57,11 @@ cat > "$WEB_DIR/manifest.json" <<EOF
 }
 EOF
 
-echo "Web flasher v$version ready in $WEB_DIR"
+(cd "$WEB_DIR" && pnpm install --frozen-lockfile && pnpm build)
+
+echo "Web flasher v$version ready in $WEB_DIR/dist"
 if [ "$serve" = 1 ]; then
   port="${PORT:-8700}"
   echo "Open http://localhost:$port in Chrome or Edge (Ctrl-C to stop)"
-  exec python3 -m http.server "$port" --bind 127.0.0.1 --directory "$WEB_DIR"
+  cd "$WEB_DIR" && exec pnpm exec vite preview --host 127.0.0.1 --port "$port" --strictPort
 fi

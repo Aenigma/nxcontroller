@@ -2,9 +2,11 @@
 # firmware
 firmware/target/
 firmware/.env
-# web flasher build output (scripts/web.sh)
-web/firmware/
-web/manifest.json
+# web page: firmware images and manifest written by scripts/web.sh, plus Vite output
+web/public/firmware/
+web/public/manifest.json
+web/node_modules/
+web/dist/
 # python
 python/.venv/
 __pycache__/

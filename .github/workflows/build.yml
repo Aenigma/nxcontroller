@@ -34,6 +34,25 @@ jobs:
         working-directory: python
         run: uv run pytest -q
 
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Typecheck and test
+        working-directory: web
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm typecheck
+          pnpm test
+
   firmware:
     runs-on: ubuntu-latest
     steps:
@@ -61,6 +80,17 @@ jobs:
           cargo clippy --release --no-default-features --features ble -- -D warnings
           cargo clippy --release --no-default-features --features wifi -- -D warnings
 
+      # pnpm's version comes from "packageManager" in web/package.json.
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: web/package.json
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
       - name: Build the web page and its firmware (Bluetooth only)
         run: |
           . "$HOME/export-esp.sh"
@@ -69,7 +99,7 @@ jobs:
       - name: Collect firmware images
         run: |
           mkdir -p dist
-          cp web/firmware/bootloader.bin web/firmware/partitions.bin web/firmware/app.bin dist/
+          cp web/public/firmware/bootloader.bin web/public/firmware/partitions.bin web/public/firmware/app.bin dist/
           # One image for any flasher: write it at offset 0x0.
           espflash save-image --chip esp32s3 --merge "$ELF" dist/nxcontroller-esp32s3-merged.bin
 
@@ -80,11 +110,11 @@ jobs:
 
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: web/
+          path: web/dist/
 
   pages:
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
-    needs: [python, firmware]
+    needs: [python, web, firmware]
     runs-on: ubuntu-latest
     permissions:
       pages: write
@@ -98,7 +128,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [python, firmware]
+    needs: [python, web, firmware]
     runs-on: ubuntu-latest
     permissions:
       contents: write

@@ -13,8 +13,10 @@ or from a Python library over WiFi.
 
 **Start here:** open the project's GitHub Pages site in Chrome or Edge. It
 installs the firmware and then works as the remote: gamepad, typing text files,
-mode and WiFi settings. To run that page locally, use `make web`
-(http://localhost:8700).
+mode and WiFi settings, and the board's log. To build and run that page locally
+with the firmware, use `make web` (http://localhost:8700). To work on the page
+itself, `cd web && pnpm install && pnpm dev` (no firmware needed; the page still
+connects to a board over Bluetooth).
 
 ## Layout
 
@@ -22,7 +24,7 @@ mode and WiFi settings. To run that page locally, use `make web`
 |-------------|-------------------------------------------------------|-------------------------------|
 | `firmware/` | Rust `no_std` firmware (esp-hal, esp-radio, embassy)  | Xtensa Rust via `espup`       |
 | `python/`   | `nxcontroller` package and `nxc` CLI                  | Python ≥3.10, `uv`            |
-| `web/`      | The single page: installer (ESP Web Tools) + remote (Web Bluetooth) | – (built by `scripts/web.sh`) |
+| `web/`      | The single page: installer (ESP Web Tools) + remote (Web Bluetooth). Preact + Vite + TypeScript | Node + `pnpm` (`scripts/web.sh` builds it) |
 | `protocol/` | `PROTOCOL.md`, the wire contract between them         | –                             |
 | `scripts/`  | setup / build / flash / monitor / test                | bash                          |
 
@@ -112,10 +114,14 @@ cd python && uv run nxc --host 127.0.0.1 ping
   retrying its network in the meantime, so a slow router still gets picked up.
   Move it to another network with `uv run nxc wifi "SSID" "password"`.
   The hotspot is open, so anyone nearby can configure the board while it's up.
-- **Web page** (`scripts/web.sh`, files in `web/`): ESP Web Tools with the
+- **Web page** (`scripts/web.sh`, project in `web/`): ESP Web Tools with the
   bootloader, partition table and app shipped as separate parts, so updating
   doesn't wipe saved WiFi or mode unless you tick "erase". It always builds the
-  Bluetooth-only firmware, ignoring your `.env`. CI (`.github/workflows/build.yml`) builds it on every push,
+  Bluetooth-only firmware, ignoring your `.env`. The script writes the images and
+  `manifest.json` into `web/public/` (gitignored), then runs `pnpm install
+  --frozen-lockfile` and `pnpm build` to produce `web/dist`, which is what gets
+  hosted. In `web/`: `pnpm dev` (live reload; the install button needs the images in
+  `public/`), `pnpm typecheck`, `pnpm test`. CI (`.github/workflows/build.yml`) builds it on every push,
   deploys it to GitHub Pages from the default branch, and attaches the firmware
   (parts plus one merged image for offset 0x0) to releases for `v*` tags.
 - **Transports are Cargo features:** `ble` (the web page), `wifi` (the Python
