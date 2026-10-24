@@ -87,10 +87,19 @@ over the network. For each `(modifiers, key)` it:
 3. releases the key (so repeated keys register twice), then holds for at least `release_ms`;
 4. releases everything once the queue is empty.
 
-With flag `0x01` (rollover), step 3 is skipped. The next keystroke goes straight
-from the held key to its own in one report when its modifiers match and the key
-differs; otherwise it releases first as in step 1. That needs about one report
+With flag `0x01` (rollover), step 3 is skipped. The next keystroke, if it also
+has the flag, goes straight from the held key to its own in one report when its
+modifiers match and the key differs; otherwise it releases first as in step 1.
+(The Python client types Enter on its own: a KEYBOARD all-released state, then a
+non-rollover TYPE with at least 20 ms holds, because the Switch 2's text field
+missed some rolled-over Enters.) That needs about one report
 per character instead of two.
+
+Typed text comes out as written regardless of the host's Caps Lock: the device
+tracks the host's LED output report, and before a letter while Caps Lock is on, it
+holds Caps Lock until the host reports it off (at most 400 ms), then continues. If the
+host doesn't confirm, it stops correcting until the queue drains. KEYBOARD states
+are never adjusted.
 
 Every report write completes only after the host has taken the report, so no
 state is skipped however fast keystrokes are queued. `press_ms`/`release_ms`

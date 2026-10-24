@@ -126,6 +126,16 @@ static KEYBOARD_CMDS: Channel<CriticalSectionRawMutex, KeyCmd, KEYBOARD_QUEUE> =
 /// Keystrokes finished since the control server last reported progress.
 static TYPED: AtomicU32 = AtomicU32::new(0);
 static TYPED_SIGNAL: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+/// The host's keyboard LED state (its last SET_REPORT), and a wake-up for changes.
+/// Caps Lock lives in the host; this is how we learn whether it's on.
+static LEDS: AtomicU8 = AtomicU8::new(0);
+static LEDS_CHANGED: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+const LED_CAPS_LOCK: u8 = 0x02;
+const KEY_CAPS_LOCK: u8 = 0x39;
+/// Longest we hold Caps Lock waiting for the host to confirm it's off. macOS
+/// ignores very short Caps Lock presses, so we hold until the LED report says so.
+const CAPS_LOCK_MAX_HOLD_MS: u64 = 400;
 static CONFIGURED: AtomicBool = AtomicBool::new(false);
 
 /// How long the gamepad task waits for new input before resending the current state.
@@ -293,6 +303,7 @@ impl Handler for DeviceState {
 
     fn reset(&mut self) {
         CONFIGURED.store(false, Ordering::Relaxed);
+        LEDS.store(0, Ordering::Relaxed);
     }
 }
 
@@ -320,6 +331,10 @@ impl RequestHandler for KeyboardRequests {
 
     fn set_report(&mut self, id: ReportId, data: &[u8]) -> OutResponse {
         info!("keyboard: SET_REPORT {id:?} {data:02x?} (LEDs)");
+        if let Some(&leds) = data.first() {
+            LEDS.store(leds, Ordering::Relaxed);
+            LEDS_CHANGED.signal(());
+        }
         OutResponse::Accepted
     }
 
@@ -464,6 +479,9 @@ pub async fn keyboard_task(mut writer: HidWriter<'static, UsbDriver, 8>) {
     const NO_KEYS: [u8; 6] = [0; 6];
     // What the host currently sees.
     let mut current = KeyboardReport::EMPTY;
+    // Whether to correct for the host's Caps Lock. Off for the rest of a typing
+    // run if the host doesn't confirm the change, so we never toggle it back and forth.
+    let mut fix_caps_lock = true;
     loop {
         let cmd = KEYBOARD_CMDS.receive().await;
         if !is_configured() {
@@ -484,6 +502,15 @@ pub async fn keyboard_task(mut writer: HidWriter<'static, UsbDriver, 8>) {
                 release_ms,
                 rollover,
             } => {
+                // Typed text comes out as written: if the host has Caps Lock on,
+                // turn it off before a letter (Shift's effect under Caps Lock
+                // differs between hosts, so swapping case wouldn't be reliable).
+                if fix_caps_lock
+                    && (0x04..=0x1D).contains(&key)
+                    && LEDS.load(Ordering::Relaxed) & LED_CAPS_LOCK != 0
+                {
+                    fix_caps_lock = turn_caps_lock_off(&mut writer, &mut current).await;
+                }
                 // Each write completes only once the host has taken the report,
                 // so every state below is seen by the host. Nothing is skipped
                 // however fast the queue fills.
@@ -493,11 +520,12 @@ pub async fn keyboard_task(mut writer: HidWriter<'static, UsbDriver, 8>) {
                 };
                 let mut down = idle;
                 down.keys[0] = key;
-                // With rollover, the previous key may still be down. Going straight
-                // to the next key in one report (previous up + next down) is fine
-                // when the modifiers match and it's a different key.
+                // With rollover, the previous key may still be down. A rollover
+                // keystroke may go straight to its key in one report (previous up +
+                // next down) when the modifiers match and it's a different key.
                 let held = current.keys[0];
-                let straight = held != 0 && held != key && current.modifiers == modifiers;
+                let straight =
+                    rollover && held != 0 && held != key && current.modifiers == modifiers;
                 if !straight && current != idle {
                     // Release anything still down and change modifiers on their own,
                     // so the host applies Shift before the key arrives and a repeated
@@ -517,12 +545,44 @@ pub async fn keyboard_task(mut writer: HidWriter<'static, UsbDriver, 8>) {
                 // Let go of everything once there's nothing more to type. While
                 // more is queued, keep modifiers (and a rolled-over key) for the
                 // next keystroke to deal with.
-                if KEYBOARD_CMDS.is_empty() && current != KeyboardReport::EMPTY {
-                    send_keyboard(&mut writer, &mut current, KeyboardReport::EMPTY).await;
+                if KEYBOARD_CMDS.is_empty() {
+                    if current != KeyboardReport::EMPTY {
+                        send_keyboard(&mut writer, &mut current, KeyboardReport::EMPTY).await;
+                    }
+                    fix_caps_lock = true; // next typing run tries again
                 }
             }
         }
     }
+}
+
+/// Presses Caps Lock until the host reports it off (or a timeout), then releases
+/// it. Returns false if the host didn't confirm.
+async fn turn_caps_lock_off(
+    writer: &mut HidWriter<'static, UsbDriver, 8>,
+    current: &mut KeyboardReport,
+) -> bool {
+    if *current != KeyboardReport::EMPTY {
+        send_keyboard(writer, current, KeyboardReport::EMPTY).await;
+    }
+    LEDS_CHANGED.reset();
+    let mut caps = KeyboardReport::EMPTY;
+    caps.keys[0] = KEY_CAPS_LOCK;
+    send_keyboard(writer, current, caps).await;
+    let confirmed = with_timeout(Duration::from_millis(CAPS_LOCK_MAX_HOLD_MS), async {
+        while LEDS.load(Ordering::Relaxed) & LED_CAPS_LOCK != 0 {
+            LEDS_CHANGED.wait().await;
+        }
+    })
+    .await
+    .is_ok();
+    send_keyboard(writer, current, KeyboardReport::EMPTY).await;
+    if confirmed {
+        info!("keyboard: turned the host's Caps Lock off before typing");
+    } else {
+        warn!("keyboard: host didn't confirm Caps Lock off; typing without correcting");
+    }
+    confirmed
 }
 
 async fn send_keyboard(
