@@ -37,6 +37,8 @@ export class Link {
   info: DeviceInfo | undefined;
   /** Counts connections opened, including reconnects after a restart. */
   opened = 0;
+  /** Whether the board should stream its log (see followLogs). */
+  private logFollow = false;
 
   private to: BluetoothRemoteGATTCharacteristic | undefined;
   private from: BluetoothRemoteGATTCharacteristic | undefined;
@@ -81,8 +83,8 @@ export class Link {
     this.info = info;
     this.opened++;
     this.events.onOpen?.(info);
-    if (info.features & FEATURE.LOGS) {
-      // No ack: the board replays its log, then keeps sending new output as LOG frames.
+    if (this.logFollow && info.features & FEATURE.LOGS) {
+      // Reconnected after a restart while following: ask again.
       await this.requestLogs(true).catch(() => {});
     }
     return info;
@@ -166,6 +168,13 @@ export class Link {
 
   /** Ask for the board's log; with `follow`, it keeps streaming new output. */
   requestLogs(follow: boolean): Promise<void> { return this.send(frame(MSG.LOGS, [follow ? 1 : 0])); }
+
+  /** Stream the board's log (it replays everything it has first), or stop. No ack. */
+  async followLogs(on: boolean): Promise<void> {
+    if (on === this.logFollow) return;
+    this.logFollow = on;
+    if (this.connected && this.features & FEATURE.LOGS) await this.requestLogs(on).catch(() => {});
+  }
 
   /** The board saved a setting and is restarting: wait for it and reconnect. */
   async reconnectAfterRestart(): Promise<void> {

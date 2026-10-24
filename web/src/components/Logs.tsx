@@ -46,7 +46,7 @@ export function Logs({ active, buffer }: Props) {
   return (
     <section hidden={!active}>
       <h2>Logs</h2>
-      <p class="muted intro">The board's recent log output, live over Bluetooth.</p>
+      <p class="muted intro">The board's recent output, live while this tab is open.</p>
       <div class="row">
         <button class="secondary" onClick={download} disabled={!text}>Download</button>
         <button class="secondary" onClick={() => buffer.clear()} disabled={!text}>Clear</button>

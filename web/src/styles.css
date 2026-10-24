@@ -103,3 +103,14 @@ kbd {
   font: 0.82rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
   white-space: pre-wrap; overflow-wrap: anywhere;
 }
+
+/* connection bar + tabs */
+.connect-bar { padding: 14px 18px; }
+.tabs { display: flex; gap: 4px; margin: 0 0 16px; border-bottom: 1px solid var(--line); }
+.tabs button {
+  background: none; color: var(--muted); border-radius: 8px 8px 0 0; padding: 9px 18px;
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.tabs button[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); }
+.tabs button:hover { color: var(--fg); }
+.hint { margin: 0 0 16px; }

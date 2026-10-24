@@ -28,7 +28,7 @@ export function Help() {
       </details>
       <details>
         <summary>Seeing the board's log</summary>
-        <p>Connect to a board with newer firmware and the <b>Logs</b> panel shows its recent output live. Otherwise, plug
+        <p>While connected, the <b>Logs</b> section on this tab shows the board's recent output, live. Without a connection, plug
           the <b>UART</b> port into a computer and open it at 115200 baud (e.g. with <code>espflash monitor</code>),
           then press <kbd>RST</kbd>. The USB port never shows logs.</p>
       </details>
