@@ -3,16 +3,23 @@ export function Help() {
     <section>
       <h2>Help</h2>
       <details>
-        <summary>Install says “Failed to initialize” or “Failed to open serial port”</summary>
+        <summary>ESP32-S3: Install says “Failed to initialize” or “Failed to open serial port”</summary>
         <ul>
           <li>You picked the <b>UART</b> chip's port (<i>USB Single Serial</i>, <i>CP210x</i>, <i>CH34x</i>). Pick <b>USB JTAG/serial debug unit</b>.</li>
           <li>The board left flashing mode. Reload the page, hold <kbd>BOOT</kbd>, tap <kbd>RST</kbd>, and keep holding <kbd>BOOT</kbd> until writing starts.</li>
         </ul>
       </details>
       <details>
+        <summary>Pico: no drive appears</summary>
+        <ul>
+          <li>Hold <kbd>BOOTSEL</kbd> before the cable goes in, and keep holding until the drive shows up.</li>
+          <li>Try another cable: charge-only cables have no data wires.</li>
+        </ul>
+      </details>
+      <details>
         <summary>The board doesn't show up when connecting</summary>
         <ul>
-          <li>Press <kbd>RST</kbd> after installing: until then it stays in flashing mode.</li>
+          <li>ESP32-S3: press <kbd>RST</kbd> after installing. Until then it stays in flashing mode.</li>
           <li>On a Mac, allow Bluetooth for your browser in <b>System Settings → Privacy &amp; Security → Bluetooth</b>.</li>
           <li>Only one page or app can be connected at a time.</li>
         </ul>
@@ -58,9 +65,10 @@ export function Help() {
       </details>
       <details>
         <summary>Seeing the board's log</summary>
-        <p>While connected, the <b>Logs</b> section on this tab shows the board's recent output, live. Without a connection, plug
-          the <b>UART</b> port into a computer and open it at 115200 baud (e.g. with <code>espflash monitor</code>),
-          then press <kbd>RST</kbd>. The USB port never shows logs.</p>
+        <p>While connected, the <b>Logs</b> section on this tab shows the board's recent output, live. Without a connection,
+          on an ESP32-S3, plug the <b>UART</b> port into a computer and open it at 115200 baud (e.g. with
+          <code>espflash monitor</code>), then press <kbd>RST</kbd>. The USB port never shows logs, and a Pico has no
+          other port, so on a Pico the log is only available here.</p>
       </details>
     </section>
   );

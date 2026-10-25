@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Build the web page into web/dist (installer + Bluetooth remote): the firmware it
-# installs (Bluetooth only, no WiFi) plus an ESP Web Tools manifest go into
-# web/public/, then Vite builds the Preact page around them.
+# offers (Bluetooth only, no WiFi) goes into web/public/firmware/ (ESP32-S3 images
+# plus an ESP Web Tools manifest; Pico W and Pico 2 W .uf2 files), then Vite builds
+# the Preact page around them.
 #
 #   scripts/web.sh            # build into web/dist
 #   scripts/web.sh --serve    # build, then serve on http://localhost:8700 (PORT=... to change)
@@ -24,6 +25,7 @@ mkdir -p "$OUT"
 # ignored so the published image never carries your WiFi or name.
 (cd "$ESP_DIR" && env -u WIFI_SSID -u WIFI_PASSWORD -u NXC_NAME \
   cargo build --release --no-default-features --features ble)
+env -u WIFI_SSID -u WIFI_PASSWORD -u NXC_NAME NXC_NO_ENV=1 "$ROOT_DIR/scripts/pico.sh" "$OUT"
 
 version="$(sed -n 's/^version *= *"\(.*\)"/\1/p' "$ESP_DIR/Cargo.toml" | head -1)"
 tmp="$(mktemp -d)"

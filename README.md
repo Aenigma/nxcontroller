@@ -1,14 +1,14 @@
 # esp-nxcontroller
 
-An ESP32-S3 shows up over its native USB port as a **Switch-compatible wired
-controller plus a USB keyboard**. You control it from a web page over Bluetooth,
-or from a Python library over WiFi.
+An ESP32-S3, Raspberry Pi Pico W or Pico 2 W shows up over USB as a
+**Switch-compatible wired controller plus a USB keyboard**. You control it from a
+web page over Bluetooth, or (ESP32-S3) from a Python library over WiFi.
 
 ```
- browser ──Bluetooth LE──┐
- (web/)                  ├─▶ ESP32-S3 ──USB HID──▶ Nintendo Switch (or a PC)
+ browser ──Bluetooth LE──┐   ESP32-S3
+ (web/)                  ├─▶ Pico W / Pico 2 W ──USB HID──▶ Nintendo Switch (or a PC)
  Python ──WiFi/TCP───────┘   (firmware/)
- (python/)
+ (python/)  (ESP32-S3 only)
 ```
 
 **Start here:** open the project's GitHub Pages site in Chrome or Edge. It
@@ -24,10 +24,11 @@ connects to a board over Bluetooth).
 |-------------|-------------------------------------------------------|-------------------------------|
 | `firmware/core/` | Rust `no_std` library shared by every board: protocol, USB HID, BLE, TCP, settings, logs (embassy, trouble-host) | – (built by a board crate) |
 | `firmware/esp32s3/` | ESP32-S3 board (esp-hal, esp-radio)            | Xtensa Rust via `espup`       |
+| `firmware/pico/` | Pico W (RP2040) and Pico 2 W (RP2350) board, Bluetooth only (embassy-rp, cyw43) | stable Rust |
 | `python/`   | `nxcontroller` package and `nxc` CLI                  | Python ≥3.10, `uv`            |
 | `web/`      | The single page: installer (ESP Web Tools) + remote (Web Bluetooth). Preact + Vite + TypeScript | Node + `pnpm` (`scripts/web.sh` builds it) |
 | `protocol/` | `PROTOCOL.md`, the wire contract between them         | –                             |
-| `scripts/`  | setup / build / flash / monitor / test, `web.sh`      | bash                          |
+| `scripts/`  | setup / build / flash / monitor / test, `pico.sh`, `web.sh` | bash                    |
 
 `firmware/` and `python/` share no code and no build system. Each builds,
 versions and ships on its own. They are coupled only through
@@ -56,9 +57,25 @@ uv run nxc tap A
 uv run nxc type "hello"
 ```
 
-`make setup|build|flash|monitor|test|mock|web` wraps the same scripts.
+`make setup|build|flash|monitor|pico|test|mock|web` wraps the same scripts.
 
-### Wiring and flashing
+### Raspberry Pi Pico W / Pico 2 W
+
+```bash
+scripts/pico.sh                  # both boards -> firmware/pico/dist/*.uf2 (stable Rust only)
+```
+
+Hold **BOOTSEL** while plugging the Pico in, then copy the `.uf2` for your board
+onto the drive that appears (`RPI-RP2` on a Pico W, `RP2350` on a Pico 2 W). The
+Pico restarts into the firmware. It has one USB port, which becomes the
+gamepad/keyboard, and no serial console: read its log from the web page (Setup →
+Logs). The Pico firmware is Bluetooth only and stores its settings in the last
+4 KiB flash sector. Its Embassy crates are pinned to one git commit (see
+`firmware/pico/Cargo.toml`), the one where `cyw43`'s Bluetooth matches
+trouble-host 0.7, and the CYW43439 radio firmware is vendored in
+`firmware/pico/cyw43-firmware/` (Infineon permissive binary license).
+
+### Wiring and flashing (ESP32-S3)
 
 ESP32-S3 DevKitC-style boards have two USB-C ports. Plug **both** into your
 computer while developing:
@@ -104,7 +121,7 @@ make mock                                   # fake device on 127.0.0.1:7700 (add
 cd python && uv run nxc --host 127.0.0.1 ping
 ```
 
-`scripts/test.sh` runs the Python tests against the mock and runs clippy on the core and the board.
+`scripts/test.sh` runs the Python tests against the mock and runs clippy on the core and every board.
 
 ## Firmware notes
 
@@ -115,16 +132,18 @@ cd python && uv run nxc --host 127.0.0.1 ping
   retrying its network in the meantime, so a slow router still gets picked up.
   Move it to another network with `uv run nxc wifi "SSID" "password"`.
   The hotspot is open, so anyone nearby can configure the board while it's up.
-- **Web page** (`scripts/web.sh`, project in `web/`): ESP Web Tools with the
+- **Web page** (`scripts/web.sh`, project in `web/`): for the ESP32-S3, ESP Web Tools with the
   bootloader, partition table and app shipped as separate parts, so updating
-  doesn't wipe saved WiFi or mode unless you tick "erase". It always builds the
-  Bluetooth-only firmware, ignoring your `.env`. The script writes the images and
+  doesn't wipe saved WiFi or mode unless you tick "erase"; for the Picos, a `.uf2`
+  download with BOOTSEL instructions. It always builds the Bluetooth-only firmware,
+  ignoring your `.env`. The script writes the images and
   `manifest.json` into `web/public/` (gitignored), then runs `pnpm install
   --frozen-lockfile` and `pnpm build` to produce `web/dist`, which is what gets
   hosted. In `web/`: `pnpm dev` (live reload; the install button needs the images in
   `public/`), `pnpm typecheck`, `pnpm test`. CI (`.github/workflows/build.yml`) builds it on every push,
   deploys it to GitHub Pages from the default branch, and attaches the firmware
-  (parts plus one merged image for offset 0x0) to releases for `v*` tags.
+  (ESP32-S3 parts plus one merged image for offset 0x0, and both `.uf2` files) to
+  releases for `v*` tags.
 - **Transports are Cargo features:** `ble` (the web page), `wifi` (the Python
   package; includes the setup hotspot), and `coex` (required when both are on).
   Source builds default to all three. The web page's firmware is Bluetooth only
@@ -157,4 +176,5 @@ cd python && uv run nxc --host 127.0.0.1 ping
   about 356 chars/s at 1 ms (`nxc keyboard-poll 1`; `nxc keyboard-poll 0` restores 5 ms).
   `examples/typing_benchmark.py` measures it on your setup.
 - WiFi power saving is disabled for latency.
-- Toolchain: `firmware/esp32s3/rust-toolchain.toml` pins the `esp` channel. Run `espup update` to upgrade it.
+- Toolchains: `firmware/esp32s3/rust-toolchain.toml` pins the `esp` channel (run
+  `espup update` to upgrade it); `firmware/pico/rust-toolchain.toml` uses stable.

@@ -17,10 +17,11 @@ h1 { font-size: 1.9rem; margin: 0 0 4px; letter-spacing: -0.01em; }
 .lede { color: var(--muted); margin: 0 0 28px; }
 section { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 20px 22px; margin-bottom: 16px; }
 h2 { font-size: 1.05rem; margin: 0 0 12px; }
-button {
+button, a.button {
   background: var(--accent); color: var(--accent-fg); border: 0; border-radius: 8px;
   padding: 9px 18px; font: 600 0.95rem system-ui, sans-serif; cursor: pointer;
 }
+a.button { display: inline-block; text-decoration: none; }
 button.secondary { background: var(--code); color: var(--fg); }
 button:disabled { opacity: 0.45; cursor: default; }
 .row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }

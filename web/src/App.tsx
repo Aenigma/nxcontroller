@@ -124,7 +124,7 @@ export function App() {
   return (
     <main>
       <h1>nxcontroller</h1>
-      <p class="lede">Turn an ESP32-S3 board into a USB gamepad and keyboard for a Nintendo Switch or a computer,
+      <p class="lede">Turn an ESP32-S3 board or a Raspberry Pi Pico W / Pico 2 W into a USB gamepad and keyboard for a Nintendo Switch or a computer,
         and control it from this page over Bluetooth.</p>
 
       {unsupported && (

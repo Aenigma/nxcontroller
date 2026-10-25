@@ -1,0 +1,58 @@
+[package]
+name         = "nxcontroller-pico"
+version      = "0.1.0"
+edition      = "2024"
+rust-version = "1.88"
+description  = "nxcontroller on the Raspberry Pi Pico W (RP2040) and Pico 2 W (RP2350)"
+
+# Build with exactly one chip feature and its target (scripts/pico.sh does this):
+#   --features rp2040 --target thumbv6m-none-eabi          Pico W
+#   --features rp2350 --target thumbv8m.main-none-eabihf   Pico 2 W
+# Bluetooth only, like the web page's ESP32-S3 firmware.
+
+[dependencies]
+nxcontroller-core = { path = "../core", features = ["ble"] }
+
+cortex-m         = "0.7.7"
+cortex-m-rt      = "0.7.5"
+cyw43            = { version = "0.7", features = ["bluetooth"] }
+cyw43-pio        = "0.10"
+embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread"] }
+embassy-rp       = { version = "0.10", features = ["critical-section-impl", "time-driver", "unstable-pac"] }
+embassy-sync     = "0.8"
+embassy-time     = "0.5.1"
+embassy-usb      = { version = "0.6", default-features = false }
+log              = "0.4.27"
+portable-atomic  = { version = "1.11", features = ["critical-section"] }
+static_cell      = "2.1.1"
+
+[features]
+rp2040 = ["embassy-rp/rp2040"]
+rp2350 = ["embassy-rp/rp235xa", "embassy-rp/binary-info"]
+
+[profile.release]
+codegen-units = 1
+debug         = 2
+lto           = "fat"
+opt-level     = "s"
+
+[profile.dev]
+opt-level = "s"
+
+# cyw43's Bluetooth support speaks the same bt-hci (0.9) as trouble-host 0.7 only
+# at this Embassy commit, which is what trouble-host 0.7.0's own Pico examples
+# use. Every Embassy crate comes from it, so the traits line up.
+[patch.crates-io]
+cyw43                     = { git = "https://github.com/embassy-rs/embassy.git", rev = "1d3c3de" }
+cyw43-pio                 = { git = "https://github.com/embassy-rs/embassy.git", rev = "1d3c3de" }
+embassy-embedded-hal      = { git = "https://github.com/embassy-rs/embassy.git", rev = "1d3c3de" }
+embassy-executor          = { git = "https://github.com/embassy-rs/embassy.git", rev = "1d3c3de" }
+embassy-futures           = { git = "https://github.com/embassy-rs/embassy.git", rev = "1d3c3de" }
+embassy-hal-internal      = { git = "https://github.com/embassy-rs/embassy.git", rev = "1d3c3de" }
+embassy-net-driver-channel = { git = "https://github.com/embassy-rs/embassy.git", rev = "1d3c3de" }
+embassy-rp                = { git = "https://github.com/embassy-rs/embassy.git", rev = "1d3c3de" }
+embassy-sync              = { git = "https://github.com/embassy-rs/embassy.git", rev = "1d3c3de" }
+embassy-time              = { git = "https://github.com/embassy-rs/embassy.git", rev = "1d3c3de" }
+embassy-time-driver       = { git = "https://github.com/embassy-rs/embassy.git", rev = "1d3c3de" }
+embassy-usb               = { git = "https://github.com/embassy-rs/embassy.git", rev = "1d3c3de" }
+embassy-usb-driver        = { git = "https://github.com/embassy-rs/embassy.git", rev = "1d3c3de" }

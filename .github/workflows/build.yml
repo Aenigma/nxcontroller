@@ -72,16 +72,20 @@ jobs:
         with:
           workspaces: |
             firmware/esp32s3
+            firmware/pico
             firmware/core
 
-      # The shared core on its own (as a board's dependency it isn't linted),
-      # with stable Rust for an Arm target.
-      - name: Lint the core
+      # Pico W / Pico 2 W and the shared core build with stable Rust; their
+      # rust-toolchain.toml adds the two Arm targets.
+      - name: Lint the core and the Pico firmware
         run: |
-          rustup target add thumbv6m-none-eabi
+          rustup target add thumbv6m-none-eabi thumbv8m.main-none-eabihf
           for features in ble wifi ble,wifi; do
             (cd firmware/core && cargo clippy --release --features "$features" --target thumbv6m-none-eabi -- -D warnings)
           done
+          cd firmware/pico
+          cargo clippy --release --features rp2040 --target thumbv6m-none-eabi -- -D warnings
+          cargo clippy --release --features rp2350 --target thumbv8m.main-none-eabihf -- -D warnings
 
       - name: Lint the ESP32-S3 firmware (ble + wifi, ble only, wifi only)
         working-directory: firmware/esp32s3
@@ -102,7 +106,7 @@ jobs:
           cache: pnpm
           cache-dependency-path: web/pnpm-lock.yaml
 
-      - name: Build the web page and its firmware (Bluetooth only)
+      - name: Build the web page and its firmware (all boards, Bluetooth only)
         run: |
           . "$HOME/export-esp.sh"
           scripts/web.sh
@@ -111,6 +115,7 @@ jobs:
         run: |
           mkdir -p dist
           cp web/public/firmware/bootloader.bin web/public/firmware/partitions.bin web/public/firmware/app.bin dist/
+          cp web/public/firmware/*.uf2 dist/
           # One image for any flasher: write it at offset 0x0.
           espflash save-image --chip esp32s3 --merge "$ELF" dist/nxcontroller-esp32s3-merged.bin
 

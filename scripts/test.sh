@@ -14,6 +14,12 @@ for features in ble wifi ble,wifi; do
   (cd "$ROOT_DIR/firmware/core" && cargo clippy --release --features "$features" --target thumbv6m-none-eabi -- -D warnings)
 done
 
+for chip in "rp2040 thumbv6m-none-eabi" "rp2350 thumbv8m.main-none-eabihf"; do
+  set -- $chip
+  echo "==> pico clippy ($1)"
+  (cd "$PICO_DIR" && cargo clippy --release --features "$1" --target "$2" -- -D warnings)
+done
+
 use_esp_toolchain
 cd "$ESP_DIR"
 for features in "" "--no-default-features --features ble" "--no-default-features --features wifi"; do

@@ -2,6 +2,7 @@
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="$ROOT_DIR/firmware/.env"
 ESP_DIR="$ROOT_DIR/firmware/esp32s3"   # ESP32-S3 board crate (Xtensa toolchain)
+PICO_DIR="$ROOT_DIR/firmware/pico"     # Pico W / Pico 2 W board crate (stable Rust)
 ELF="$ESP_DIR/target/xtensa-esp32s3-none-elf/release/nxcontroller-firmware"
 
 # Xtensa toolchain env from espup (adds the linker + libclang to PATH).
