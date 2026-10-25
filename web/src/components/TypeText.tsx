@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import type { Link } from "../link";
+import { EDITOR_MODES, type EditorMode, adaptForEditor } from "../editor";
 import { prepare } from "../protocol";
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -18,6 +19,8 @@ export function TypeText({ link, active, online, typing, setTyping }: Props) {
   const [hold, setHold] = useState("20");
   const [rollover, setRollover] = useState(true);
   const [countdown, setCountdown] = useState("0");
+  const [editor, setEditor] = useState<EditorMode>("normal");
+  const [tabWidth, setTabWidth] = useState("1");
   const [status, setStatus] = useState("");
   const [progress, setProgress] = useState({ value: 0, max: 1 });
   const [dropping, setDropping] = useState(false);
@@ -26,13 +29,17 @@ export function TypeText({ link, active, online, typing, setTyping }: Props) {
   // Losing the connection stops typing.
   useEffect(() => { if (!online) stopRequested.current = true; }, [online]);
 
-  const stats = useMemo(() => {
-    if (!text) return "";
+  /** Keystrokes to send, after US-keyboard normalisation and the editor's quirks. */
+  const plan = useMemo(() => {
     const { text: typable, skipped } = prepare(text);
-    const lines = typable.split("\n").length;
-    return `${typable.length.toLocaleString()} characters, ${lines.toLocaleString()} lines` +
-      (skipped ? ` · ${skipped} can't be typed on a US keyboard and will be skipped` : "");
-  }, [text]);
+    const opts = { tabWidth: Math.max(1, Math.min(16, Number(tabWidth) || 1)) };
+    const keys = adaptForEditor(typable, editor, opts);
+    return { keys, skipped, lines: typable ? typable.split("\n").length : 0 };
+  }, [text, editor, tabWidth]);
+
+  const stats = !text ? "" :
+    `${plan.keys.length.toLocaleString()} keystrokes, ${plan.lines.toLocaleString()} lines` +
+    (plan.skipped ? ` · ${plan.skipped} characters can't be typed on a US keyboard and will be skipped` : "");
 
   const loadFile = async (file: File | undefined) => {
     if (file) setText(await file.text());
@@ -45,17 +52,17 @@ export function TypeText({ link, active, online, typing, setTyping }: Props) {
 
   const type = async () => {
     if (!link) return;
-    const { text: typable } = prepare(text);
-    if (!typable) return;
+    const { keys } = plan;
+    if (!keys) return;
     const holdMs = Math.max(0, Math.min(255, Number(hold) || 0));
     const secsBefore = Math.max(0, Number(countdown) || 0);
     stopRequested.current = false;
     setTyping(true);
-    setProgress({ value: 0, max: typable.length });
+    setProgress({ value: 0, max: keys.length });
     try {
       for (let i = secsBefore; i > 0 && !stopRequested.current; i--) { setStatus(`Starting in ${i}…`); await sleep(1000); }
       const start = performance.now();
-      const finished = await link.type(typable, {
+      const finished = await link.type(keys, {
         holdMs, rollover,
         shouldStop: () => stopRequested.current,
         onProgress: (done, total) => {
@@ -66,7 +73,7 @@ export function TypeText({ link, active, online, typing, setTyping }: Props) {
         },
       });
       const secs = (performance.now() - start) / 1000;
-      setStatus(finished ? `Done: ${typable.length.toLocaleString()} characters in ${secs.toFixed(1)} s.` : "Stopped.");
+      setStatus(finished ? `Done: ${keys.length.toLocaleString()} keystrokes in ${secs.toFixed(1)} s.` : "Stopped.");
     } catch (e) {
       setStatus("Typing failed: " + (e as Error).message);
       try { await link.releaseAll(); } catch { /* already gone */ }
@@ -95,6 +102,14 @@ export function TypeText({ link, active, online, typing, setTyping }: Props) {
         onDrop={(e) => { e.preventDefault(); setDropping(false); loadFile(e.dataTransfer?.files[0]); }}
       />
       <div class="row mt12">
+        <label>Editor <select value={editor} onChange={(e) => setEditor(e.currentTarget.value as EditorMode)}>
+          {EDITOR_MODES.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+        </select></label>
+        {editor === "smilebasic" &&
+          <label>Tab <input type="number" min="1" max="16" value={tabWidth} onInput={(e) => setTabWidth(e.currentTarget.value)} /> spaces</label>}
+        <span class="muted">{EDITOR_MODES.find((m) => m.id === editor)!.hint}</span>
+      </div>
+      <div class="row mt12">
         <label>Hold <input type="number" min="0" max="255" value={hold} onInput={(e) => setHold(e.currentTarget.value)} /> ms</label>
         <label><input type="checkbox" checked={rollover} onChange={(e) => setRollover(e.currentTarget.checked)} /> Rollover</label>
         <label>Countdown <input type="number" min="0" max="30" value={countdown} onInput={(e) => setCountdown(e.currentTarget.value)} /> s</label>
@@ -106,8 +121,9 @@ export function TypeText({ link, active, online, typing, setTyping }: Props) {
       </div>
       <progress value={progress.value} max={progress.max} />
       <p class="step-note"><b>Hold</b> is how long each key stays down and up: 20&nbsp;ms is reliable on a Switch 2,
-        0 is fastest on a computer. <b>Rollover</b> goes straight from one key to the next, about twice as fast.
-        <b>Countdown</b> gives you time to click into the target window. Characters a US keyboard can't type are skipped.</p>
+        0 is fastest on a computer. <b>Rollover</b> goes straight from one key to the next, about twice as fast.{" "}
+        <b>Countdown</b> gives you time to click into the target window. <b>Editor</b> makes up for what the target
+        editor does on its own (see Help, under Setup). Characters a US keyboard can't type are skipped.</p>
     </section>
   );
 }

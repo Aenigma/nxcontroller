@@ -70,6 +70,10 @@ export function parseHelloAck(payload: Uint8Array): DeviceInfo {
   };
 }
 
+/** Keys with no character of their own, written as stand-ins. Only editor.ts puts them in text to type. */
+export const SPECIAL = { BACKSPACE: "\b", END: "\uE000" } as const;
+const SPECIAL_KEYS: ReadonlySet<string> = new Set(Object.values(SPECIAL));
+
 // US layout: character -> [modifiers, HID usage]
 export type Key = readonly [modifiers: number, usage: number];
 
@@ -81,7 +85,7 @@ function buildKeymap(): Map<string, Key> {
   }
   "1234567890".split("").forEach((d, i) => map.set(d, [0, 0x1e + i]));
   const plain: Record<string, number> = {
-    "\n": 0x28, "\t": 0x2b, " ": 0x2c, "-": 0x2d, "=": 0x2e, "[": 0x2f, "]": 0x30,
+    "\n": 0x28, [SPECIAL.BACKSPACE]: 0x2a, [SPECIAL.END]: 0x4d, "\t": 0x2b, " ": 0x2c, "-": 0x2d, "=": 0x2e, "[": 0x2f, "]": 0x30,
     "\\": 0x31, ";": 0x33, "'": 0x34, "`": 0x35, ",": 0x36, ".": 0x37, "/": 0x38,
   };
   for (const [ch, key] of Object.entries(plain)) map.set(ch, [0, key]);
@@ -103,7 +107,7 @@ export function prepare(text: string): { text: string; skipped: number } {
   for (const ch of text) {
     const r = REPLACEMENTS[ch] ?? ch;
     for (const c of r) {
-      if (KEYMAP.has(c)) out += c; else skipped++;
+      if (!SPECIAL_KEYS.has(c) && KEYMAP.has(c)) out += c; else skipped++;
     }
   }
   return { text: out, skipped };

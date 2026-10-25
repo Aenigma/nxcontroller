@@ -24,7 +24,22 @@ export function Help() {
       <details>
         <summary>Typed text goes missing or lines get merged</summary>
         <p>Raise <b>Hold</b> (try 30&nbsp;ms) or turn off <b>Rollover</b>. Some apps only check the keyboard once per frame.
-          Text only lands where typing is possible: on a Switch, a text field.</p>
+          In SmileBASIC, set <b>Editor</b> to <b>SmileBASIC</b>. Text only lands where typing is possible: on a Switch, a text field.</p>
+      </details>
+      <details>
+        <summary>What the Editor setting does</summary>
+        <p>Code editors add things as you type, so typing a file into one doesn't always give back the file.</p>
+        <ul>
+          <li><b>Normal</b> types the text as is. Use it for plain text fields and editors that don't indent.</li>
+          <li><b>SmileBASIC</b> is for SmileBASIC 4, whose editor copies the previous line's indentation on Enter.
+            Each line types only the change: extra spaces, or Backspaces to remove some. Tabs become spaces
+            (<b>Tab</b> sets how many). Before an Enter that follows a word, it presses <kbd>End</kbd>: otherwise,
+            when keyword suggestions are open (after <code>END</code>, say), Enter picks one and two lines merge.
+            Start on an empty, unindented line.</li>
+          <li><b>Strip indent</b> drops each line's leading spaces and tabs, for editors that indent for you, like VS Code.
+            Editors that also close brackets and quotes can still leave extras: turn that off first
+            (VS Code: <b>Auto Closing Brackets</b> and <b>Auto Closing Quotes</b> set to <i>never</i>).</li>
+        </ul>
       </details>
       <details>
         <summary>Seeing the board's log</summary>
