@@ -119,6 +119,10 @@ export class Link {
     });
   }
 
+  /**
+   * Send bytes (one or more frames) in order. Writes are acknowledged: the board can drop
+   * unacknowledged ones when its buffers are full, and the browser never hears about it.
+   */
   send(bytes: Uint8Array): Promise<void> {
     // Writes must stay in order; chain them.
     this.writing = this.writing.then(async () => {
@@ -126,7 +130,7 @@ export class Link {
       for (let i = 0; i < bytes.length;) {
         const part = bytes.slice(i, i + this.chunk);
         try {
-          await this.to!.writeValueWithoutResponse(part);
+          await this.to!.writeValueWithResponse(part);
           i += part.length;
         } catch (e) {
           if (this.chunk > 20 && this.connected) { this.chunk = 20; continue; } // small MTU: retry smaller
@@ -210,18 +214,22 @@ export class Link {
       if (done !== lastDone) { lastDone = done; lastChange = Date.now(); onProgress(Math.min(done, total), total); }
       if (done >= total) return true;
       if (sent < total && room > 0) {
-        if (CAREFUL_KEYS.has(keys[sent]![1])) {
-          // Release whatever rollover left down, then this key alone, held longer.
-          const ms = Math.max(holdMs, CAREFUL_HOLD_MS);
-          await this.send(frame(MSG.KEYBOARD, [0, 0, 0, 0, 0, 0, 0]));
-          await this.send(frame(MSG.TYPE, [0, ms, ms, ...keys[sent]!]));
-          sent += 1;
-          continue;
+        // Everything there's room for, as one stream of frames: fewer, fuller writes.
+        const end = Math.min(sent + room, total), out: number[] = [];
+        while (sent < end) {
+          if (CAREFUL_KEYS.has(keys[sent]![1])) {
+            // Release whatever rollover left down, then this key alone, held longer.
+            const ms = Math.max(holdMs, CAREFUL_HOLD_MS);
+            out.push(...frame(MSG.KEYBOARD, [0, 0, 0, 0, 0, 0, 0]), ...frame(MSG.TYPE, [0, ms, ms, ...keys[sent]!]));
+            sent += 1;
+            continue;
+          }
+          let n = Math.min(end - sent, MAX_TYPE_KEYS);
+          for (let i = 0; i < n; i++) if (CAREFUL_KEYS.has(keys[sent + i]![1])) { n = i; break; }
+          out.push(...frame(MSG.TYPE, [rollover ? TYPE_ROLLOVER : 0, holdMs, holdMs, ...keys.slice(sent, sent + n).flat()]));
+          sent += n;
         }
-        let n = Math.min(room, MAX_TYPE_KEYS, total - sent);
-        for (let i = 0; i < n; i++) if (CAREFUL_KEYS.has(keys[sent + i]![1])) { n = i; break; }
-        await this.send(frame(MSG.TYPE, [rollover ? TYPE_ROLLOVER : 0, holdMs, holdMs, ...keys.slice(sent, sent + n).flat()]));
-        sent += n;
+        await this.send(Uint8Array.from(out));
         continue;
       }
       if (Date.now() - lastChange > STALL_TIMEOUT_MS) throw new Error(`typing stalled after ${done}/${total} keys`);

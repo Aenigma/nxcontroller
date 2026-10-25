@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { Link } from "./link";
 import { LogBuffer } from "./logs";
-import { FEATURE, MSG, frame } from "./protocol";
+import { FEATURE, FrameParser, MSG, frame } from "./protocol";
 
 const utf8 = (s: string) => new TextEncoder().encode(s);
 
@@ -44,7 +44,7 @@ describe("Link on a simulated board", () => {
     const logs = new LogBuffer();
     const link = new Link({ onDisconnect() {}, onLog: (p) => logs.push(p) });
     (link as unknown as { to: unknown }).to = {
-      writeValueWithoutResponse: async (v: Uint8Array) => { written.push(v); },
+      writeValueWithResponse: async (v: Uint8Array) => { written.push(v); },
     };
     return { link, written, logs };
   }
@@ -59,6 +59,23 @@ describe("Link on a simulated board", () => {
     link.onData(frame(MSG.LOG, [...utf8("world\n")]));
     expect([...(await reply)]).toEqual([1, 0, 0, 0, 1]);
     expect(logs.text).toBe("hello world\n");
+  });
+
+  it("sends what fits as one stream of frames, with Enter alone after a release", async () => {
+    const { link, written } = simulated();
+    Object.assign(link, { device: { gatt: { connected: true } } });
+    const typing = link.type("ab\nc", { holdMs: 5, rollover: true, onProgress() {}, shouldStop: () => false });
+    await new Promise((r) => setTimeout(r, 0));
+    link.onData(frame(MSG.TYPE_PROGRESS, [4, 0]));
+    expect(await typing).toBe(true);
+    expect(written).toHaveLength(1);
+    const frames = new FrameParser().push(written[0]!);
+    expect(frames.map((f) => [f.type, ...f.payload])).toEqual([
+      [MSG.TYPE, 1, 5, 5, 0, 0x04, 0, 0x05],
+      [MSG.KEYBOARD, 0, 0, 0, 0, 0, 0, 0],
+      [MSG.TYPE, 0, 20, 20, 0, 0x28],
+      [MSG.TYPE, 1, 5, 5, 0, 0x06],
+    ]);
   });
 
   it("follows the log on demand, once per change, announcing the replay", async () => {

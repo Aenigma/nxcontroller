@@ -81,6 +81,34 @@ export interface PadIO {
   now?(): number;
 }
 
+/**
+ * Sends reports one at a time, each after the last was acknowledged. While one is on its
+ * way, a report that only moves the sticks replaces the last one waiting instead of
+ * queueing behind it; button and D-pad changes always go out, so no tap is lost.
+ */
+export class ReportQueue {
+  private waiting: Report[] = [];
+  private busy = false;
+
+  constructor(private readonly write: (report: Report) => Promise<void>) {}
+
+  push(report: Report): void {
+    const last = this.waiting[this.waiting.length - 1];
+    if (last && last[0] === report[0] && last[1] === report[1] && last[2] === report[2]) {
+      this.waiting[this.waiting.length - 1] = report;
+    } else {
+      this.waiting.push(report);
+    }
+    if (!this.busy) void this.drain();
+  }
+
+  private async drain(): Promise<void> {
+    this.busy = true;
+    while (this.waiting.length) await this.write(this.waiting.shift()!).catch(() => {});
+    this.busy = false;
+  }
+}
+
 /** Owns the input sources and sends the merged state to the board. */
 export class PadController {
   readonly sources = newSources();

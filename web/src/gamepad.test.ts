@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  BUTTONS, PadController, applyShortcut, axis, hatValue, mergeSources, newSource, newSources, parseSequence,
+  BUTTONS, PadController, ReportQueue, applyShortcut, axis, hatValue, mergeSources, newSource, newSources, parseSequence,
   readPhysical, type Report,
 } from "./gamepad";
 
@@ -170,5 +170,20 @@ describe("PadController", () => {
     pad.update();
     pad.clear("screen");
     expect(seen).toEqual([0x04, 0]);
+  });
+});
+
+describe("ReportQueue", () => {
+  it("sends one at a time, merging stick moves but never button changes", async () => {
+    const sent: number[][] = [];
+    let ack: () => void = () => {};
+    const q = new ReportQueue((r) => { sent.push(r); return new Promise<void>((res) => { ack = res; }); });
+    const at = (buttons: number, lx: number) => [buttons, 0, 8, lx, 128, 128, 128];
+    q.push(at(0, 128));                    // goes out at once
+    q.push(at(0, 140)); q.push(at(0, 150)); // stick only: the second replaces the first
+    q.push(at(4, 150)); q.push(at(0, 150)); // a tap: both kept
+    expect(sent).toEqual([at(0, 128)]);
+    for (let i = 0; i < 4; i++) { ack(); await new Promise((r) => setTimeout(r, 0)); }
+    expect(sent).toEqual([at(0, 128), at(0, 150), at(4, 150), at(0, 150)]);
   });
 });

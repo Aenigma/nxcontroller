@@ -3,7 +3,8 @@
 The firmware (built with ``--features ble``) exposes one GATT service that
 carries the same ``[type][len][payload]`` frames as TCP port 7700:
 
-- ``TO_DEVICE_UUID``: client -> device, write / write without response.
+- ``TO_DEVICE_UUID``: client -> device, write / write without response. We use
+  write (acknowledged): the board may drop unacknowledged writes when its buffers fill.
 - ``FROM_DEVICE_UUID``: device -> client, notify.
 
 Both directions are byte streams: a frame can span several writes or
@@ -135,13 +136,9 @@ class BleLink:
                 continue
 
     async def send(self, frame: bytes) -> None:
-        """Send one frame with write-without-response (no ATT round trip)."""
-        size = self._client.mtu_size - 3
-        char = self._client.services.get_characteristic(TO_DEVICE_UUID)
-        if char is not None:
-            size = char.max_write_without_response_size
-        for part in chunks(frame, size):
-            await self._client.write_gatt_char(TO_DEVICE_UUID, part, response=False)
+        """Send one frame with acknowledged writes, in pieces of at most ATT_MTU - 3 bytes."""
+        for part in chunks(frame, max(20, self._client.mtu_size - 3)):
+            await self._client.write_gatt_char(TO_DEVICE_UUID, part, response=True)
 
     async def request(self, frame: bytes, expected: type, timeout: float = 3.0):
         await self.send(frame)

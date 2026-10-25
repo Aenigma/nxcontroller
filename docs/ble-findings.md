@@ -153,9 +153,12 @@ switch TCP control off, or to require a BLE-provisioned token.
   (23 bytes, 20-byte payload). A frame bigger than the negotiated payload (SET_WIFI, long TYPE
   text) is chunked by the client. Recommended: ask for MTU 247, but stay correct at 23. Browsers
   don't expose the MTU, so the web client chunks at 20 bytes.
-- Write without response, not write-with-response: no ATT round trip, so several writes fit in
-  one connection event. That is the right fit for state reports. Requests (HELLO, PING,
-  SET_MODE…) already get protocol-level replies.
+- ~~Write without response~~ **Write with response** (changed after testing). Unacknowledged
+  writes looked like the right fit, but in practice a burst of them (the first 256 keystrokes of
+  a typing run, sent as dozens of small writes) lost its tail: keystrokes 210–256 of a run went
+  missing with no error anywhere, leaving lines merged. Clients now use acknowledged writes and
+  pack frames into as few writes as possible; gamepad reports go one at a time, with stick-only
+  updates merged while one is in flight.
 - **Flow control (TYPE_PROGRESS 0x85):** it maps directly onto notifications. Write commands are
   reliable at the link layer, but the ATT spec lets the server drop them when its buffers are
   full, so device pacing matters *more* over BLE. Rules: (a) the client must subscribe before

@@ -1,7 +1,7 @@
 import type { ComponentChildren } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import {
-  BUTTONS, PadController, applyShortcut, newSource, normalizeKey, parseSequence, readPhysical, runSequence,
+  BUTTONS, PadController, ReportQueue, applyShortcut, newSource, normalizeKey, parseSequence, readPhysical, runSequence,
   type ButtonName, type Dir, type PadView, type Report,
 } from "../gamepad";
 import type { Link } from "../link";
@@ -99,6 +99,7 @@ export function Gamepad({ link, active }: Props) {
   const padRef = useRef<PadController | null>(null);
   if (!padRef.current) {
     let seenOpen = 0;
+    const reports = new ReportQueue((report) => linkRef.current?.send(frame(MSG.GAMEPAD, report)) ?? Promise.resolve());
     const pad: PadController = new PadController({
       canSend() {
         const l = linkRef.current;
@@ -106,7 +107,7 @@ export function Gamepad({ link, active }: Props) {
         if (l.opened !== seenOpen) { seenOpen = l.opened; pad.resetSent(); } // resend the full state after (re)connecting
         return true;
       },
-      send(report: Report) { linkRef.current?.send(frame(MSG.GAMEPAD, report)).catch(() => {}); },
+      send(report: Report) { reports.push(report); },
     });
     padRef.current = pad;
   }
