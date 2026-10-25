@@ -1,6 +1,7 @@
 .DS_Store
 # firmware
-firmware/target/
+firmware/*/target/
+firmware/core/Cargo.lock
 firmware/.env
 # web page: firmware images and manifest written by scripts/web.sh, plus Vite output
 web/public/firmware/

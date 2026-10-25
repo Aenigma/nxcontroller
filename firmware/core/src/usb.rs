@@ -5,7 +5,7 @@
 //! Network tasks push reports into the channels below; the USB tasks forward
 //! them to the host in order, so short taps are never coalesced away.
 
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
+use portable_atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 
 use embassy_futures::join::join;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -17,14 +17,12 @@ use embassy_usb::class::hid::{
     self, HidProtocolMode, HidReaderWriter, HidWriter, ReportId, RequestHandler,
 };
 use embassy_usb::control::OutResponse;
+use embassy_usb::driver::Driver;
 use embassy_usb::{Builder, Handler, UsbDevice, UsbVersion};
-use esp_hal::usb::otg::embassy_usb_device::Driver;
 use log::{info, warn};
 use static_cell::StaticCell;
 
 use crate::settings::Mode;
-
-pub type UsbDriver = Driver<'static>;
 
 static MODE: AtomicU8 = AtomicU8::new(Mode::DEFAULT as u8);
 
@@ -358,13 +356,15 @@ impl RequestHandler for KeyboardRequests {
     }
 }
 
-pub struct UsbParts {
-    pub device: UsbDevice<'static, UsbDriver>,
-    pub gamepad: Option<HidReaderWriter<'static, UsbDriver, 8, 8>>,
-    pub keyboard: Option<HidWriter<'static, UsbDriver, 8>>,
+/// The USB device and its HID interfaces. Each board runs these with [`run_device`],
+/// [`run_gamepad`] and [`run_keyboard`] in tasks of its own (tasks can't be generic).
+pub struct UsbParts<D: Driver<'static>> {
+    pub device: UsbDevice<'static, D>,
+    pub gamepad: Option<HidReaderWriter<'static, D, 8, 8>>,
+    pub keyboard: Option<HidWriter<'static, D, 8>>,
 }
 
-pub fn build(driver: UsbDriver, mode: Mode, keyboard_poll_ms: u8) -> UsbParts {
+pub fn build<D: Driver<'static>>(driver: D, mode: Mode, keyboard_poll_ms: u8) -> UsbParts<D> {
     MODE.store(mode as u8, Ordering::Relaxed);
     let id = if mode.has_gamepad() {
         GAMEPAD_IDENTITY
@@ -443,13 +443,11 @@ pub fn build(driver: UsbDriver, mode: Mode, keyboard_poll_ms: u8) -> UsbParts {
     }
 }
 
-#[embassy_executor::task]
-pub async fn usb_device_task(mut device: UsbDevice<'static, UsbDriver>) -> ! {
+pub async fn run_device<D: Driver<'static>>(mut device: UsbDevice<'static, D>) -> ! {
     device.run().await
 }
 
-#[embassy_executor::task]
-pub async fn gamepad_task(hid: HidReaderWriter<'static, UsbDriver, 8, 8>) {
+pub async fn run_gamepad<D: Driver<'static>>(hid: HidReaderWriter<'static, D, 8, 8>) {
     let (reader, mut writer) = hid.split();
     let forward = async {
         // Send the current state on every poll, not just on change: console
@@ -474,8 +472,7 @@ pub async fn gamepad_task(hid: HidReaderWriter<'static, UsbDriver, 8, 8>) {
     join(reader.run(false, &mut IgnoreRequests), forward).await;
 }
 
-#[embassy_executor::task]
-pub async fn keyboard_task(mut writer: HidWriter<'static, UsbDriver, 8>) {
+pub async fn run_keyboard<D: Driver<'static>>(mut writer: HidWriter<'static, D, 8>) {
     const NO_KEYS: [u8; 6] = [0; 6];
     // What the host currently sees.
     let mut current = KeyboardReport::EMPTY;
@@ -558,8 +555,8 @@ pub async fn keyboard_task(mut writer: HidWriter<'static, UsbDriver, 8>) {
 
 /// Presses Caps Lock until the host reports it off (or a timeout), then releases
 /// it. Returns false if the host didn't confirm.
-async fn turn_caps_lock_off(
-    writer: &mut HidWriter<'static, UsbDriver, 8>,
+async fn turn_caps_lock_off<D: Driver<'static>>(
+    writer: &mut HidWriter<'static, D, 8>,
     current: &mut KeyboardReport,
 ) -> bool {
     if *current != KeyboardReport::EMPTY {
@@ -585,8 +582,8 @@ async fn turn_caps_lock_off(
     confirmed
 }
 
-async fn send_keyboard(
-    writer: &mut HidWriter<'static, UsbDriver, 8>,
+async fn send_keyboard<D: Driver<'static>>(
+    writer: &mut HidWriter<'static, D, 8>,
     current: &mut KeyboardReport,
     report: KeyboardReport,
 ) {

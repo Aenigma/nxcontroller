@@ -1,4 +1,4 @@
-//! Compile-time configuration, injected from `firmware/.env` by `scripts/build.sh`.
+//! Compile-time configuration, injected from `firmware/.env` by the build scripts.
 //!
 //! WiFi credentials are optional. A build without them (like the web flasher's)
 //! starts the setup hotspot on first boot. Credentials saved on the device

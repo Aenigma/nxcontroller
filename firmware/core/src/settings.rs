@@ -1,15 +1,7 @@
 //! Persisted settings: USB mode and WiFi credentials.
 //!
-//! Stored as one small record in the first sector of the `nvs` partition. We
-//! don't use ESP-IDF's NVS, so that space is otherwise unused. Erasing the flash
-//! (e.g. the web flasher's "erase" option) resets everything to defaults.
-
-use esp_bootloader_esp_idf::partitions::{
-    self, DataPartitionSubType, FlashStorage, PARTITION_TABLE_MAX_LEN, PartitionEntry,
-    PartitionType,
-};
-use log::warn;
-use static_cell::StaticCell;
+//! Stored as one small record in one flash sector that each board sets aside
+//! (see [`Storage`]). Erasing the flash resets everything to defaults.
 
 const MAGIC: [u8; 4] = *b"NXCM";
 
@@ -57,54 +49,37 @@ impl Mode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsError {
-    /// Flash has no `nvs` partition, so nothing can be saved.
+    /// The board has nowhere to save settings.
     NoStorage,
     TooLong,
-    Flash(partitions::Error),
+    /// Reading, erasing or writing the flash failed.
+    Flash,
 }
 
-impl From<partitions::Error> for SettingsError {
-    fn from(e: partitions::Error) -> Self {
-        SettingsError::Flash(e)
-    }
+/// Where a board keeps the settings record: the start of a flash sector that
+/// nothing else uses.
+pub trait Storage: Send {
+    /// Reads the start of the sector into `record`.
+    fn read(&mut self, record: &mut [u8]) -> Result<(), SettingsError>;
+    /// Erases the sector, then writes `record` at its start.
+    fn write(&mut self, record: &[u8]) -> Result<(), SettingsError>;
 }
 
 pub struct Settings {
-    flash: FlashStorage<'static>,
-    nvs: Option<PartitionEntry>,
+    storage: Option<&'static mut dyn Storage>,
     record: [u8; RECORD_LEN],
 }
 
 impl Settings {
-    pub fn new(flash: FlashStorage<'static>) -> Self {
-        // Park the second core during writes so it can't fetch from flash meanwhile.
-        let mut flash = flash.multicore_auto_park();
-        static TABLE: StaticCell<[u8; PARTITION_TABLE_MAX_LEN]> = StaticCell::new();
-        let nvs =
-            partitions::read_partition_table(&mut flash, TABLE.init([0; PARTITION_TABLE_MAX_LEN]))
-                .ok()
-                .and_then(|table| {
-                    table
-                        .find_partition(PartitionType::Data(DataPartitionSubType::Nvs))
-                        .ok()
-                        .flatten()
-                });
-
+    /// Loads the saved settings. Without `storage`, defaults apply and nothing can be saved.
+    pub fn new(mut storage: Option<&'static mut dyn Storage>) -> Self {
         let mut record = [0xFFu8; RECORD_LEN];
-        match nvs {
-            Some(nvs) => {
-                if nvs
-                    .as_flash_region(&mut flash)
-                    .read(0, &mut record)
-                    .is_err()
-                    || record[..4] != MAGIC
-                {
-                    record = [0xFF; RECORD_LEN]; // blank or foreign: use defaults
-                }
-            }
-            None => warn!("no nvs partition found: settings can't be saved"),
+        if let Some(storage) = storage.as_deref_mut()
+            && (storage.read(&mut record).is_err() || record[..4] != MAGIC)
+        {
+            record = [0xFF; RECORD_LEN]; // blank or foreign: use defaults
         }
-        Self { flash, nvs, record }
+        Self { storage, record }
     }
 
     pub fn mode(&self) -> Mode {
@@ -156,11 +131,11 @@ impl Settings {
     }
 
     fn save(&mut self) -> Result<(), SettingsError> {
-        let nvs = self.nvs.ok_or(SettingsError::NoStorage)?;
+        let storage = self
+            .storage
+            .as_deref_mut()
+            .ok_or(SettingsError::NoStorage)?;
         self.record[..4].copy_from_slice(&MAGIC);
-        let mut region = nvs.as_flash_region(&mut self.flash);
-        region.erase(0, FlashStorage::SECTOR_SIZE)?;
-        region.write(0, &self.record)?;
-        Ok(())
+        storage.write(&self.record)
     }
 }

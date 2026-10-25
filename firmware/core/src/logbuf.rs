@@ -1,4 +1,4 @@
-//! Logging: prints to the serial console like esp-println's logger, and keeps the
+//! Logging: prints to the board's serial console (if it has one), and keeps the
 //! most recent output in RAM so clients can fetch it over the control link (LOGS).
 
 use core::cell::RefCell;
@@ -100,7 +100,7 @@ pub async fn wait_for_output(reader: Reader) {
 }
 
 /// Installs the logger. Call once, first thing at boot.
-pub fn init() {
+pub(crate) fn init() {
     static LOGGER: BufferLogger = BufferLogger;
     // SAFETY: called once at boot, before anything else logs (as esp-println does).
     unsafe {
@@ -131,8 +131,13 @@ impl Log for BufferLogger {
             Level::Debug => ("\u{1b}[34m", "\u{1b}[0m"),
             Level::Trace => ("\u{1b}[35m", "\u{1b}[0m"),
         };
-        // Console without the trailing newline (println adds one).
-        esp_println::println!("{color}{}{reset}", text.trim_end_matches('\n'));
+        // Console without the trailing newline (the board's println adds one).
+        if let Some(print) = crate::board().and_then(|b| b.console) {
+            print(format_args!(
+                "{color}{}{reset}",
+                text.trim_end_matches('\n')
+            ));
+        }
 
         critical_section::with(|cs| RING.borrow_ref_mut(cs).push(text.as_bytes()));
         for signal in &NEW_OUTPUT {

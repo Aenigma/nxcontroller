@@ -22,16 +22,17 @@ connects to a board over Bluetooth).
 
 | Path        | What                                                  | Toolchain                     |
 |-------------|-------------------------------------------------------|-------------------------------|
-| `firmware/` | Rust `no_std` firmware (esp-hal, esp-radio, embassy)  | Xtensa Rust via `espup`       |
+| `firmware/core/` | Rust `no_std` library shared by every board: protocol, USB HID, BLE, TCP, settings, logs (embassy, trouble-host) | – (built by a board crate) |
+| `firmware/esp32s3/` | ESP32-S3 board (esp-hal, esp-radio)            | Xtensa Rust via `espup`       |
 | `python/`   | `nxcontroller` package and `nxc` CLI                  | Python ≥3.10, `uv`            |
 | `web/`      | The single page: installer (ESP Web Tools) + remote (Web Bluetooth). Preact + Vite + TypeScript | Node + `pnpm` (`scripts/web.sh` builds it) |
 | `protocol/` | `PROTOCOL.md`, the wire contract between them         | –                             |
-| `scripts/`  | setup / build / flash / monitor / test                | bash                          |
+| `scripts/`  | setup / build / flash / monitor / test, `web.sh`      | bash                          |
 
 `firmware/` and `python/` share no code and no build system. Each builds,
 versions and ships on its own. They are coupled only through
 `protocol/PROTOCOL.md`. When you change the protocol, update
-`firmware/src/protocol.rs` and `python/src/nxcontroller/protocol.py` together.
+`firmware/core/src/protocol.rs` and `python/src/nxcontroller/protocol.py` together.
 
 ## Quick start
 
@@ -55,7 +56,7 @@ uv run nxc tap A
 uv run nxc type "hello"
 ```
 
-`make setup|build|flash|monitor|test|mock` wraps the same scripts.
+`make setup|build|flash|monitor|test|mock|web` wraps the same scripts.
 
 ### Wiring and flashing
 
@@ -103,7 +104,7 @@ make mock                                   # fake device on 127.0.0.1:7700 (add
 cd python && uv run nxc --host 127.0.0.1 ping
 ```
 
-`scripts/test.sh` runs the Python tests against the mock and runs clippy on the firmware.
+`scripts/test.sh` runs the Python tests against the mock and runs clippy on the core and the board.
 
 ## Firmware notes
 
@@ -156,4 +157,4 @@ cd python && uv run nxc --host 127.0.0.1 ping
   about 356 chars/s at 1 ms (`nxc keyboard-poll 1`; `nxc keyboard-poll 0` restores 5 ms).
   `examples/typing_benchmark.py` measures it on your setup.
 - WiFi power saving is disabled for latency.
-- Toolchain: `rust-toolchain.toml` pins the `esp` channel. Run `espup update` to upgrade it.
+- Toolchain: `firmware/esp32s3/rust-toolchain.toml` pins the `esp` channel. Run `espup update` to upgrade it.

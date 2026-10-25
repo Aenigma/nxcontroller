@@ -22,9 +22,9 @@
 //! - No arbitration with the TCP client: both can drive the USB reports, and
 //!   typing progress goes to whichever transport is waiting for it.
 
+use bt_hci::transport::Transport;
 use embassy_futures::join::join;
 use embassy_futures::select::{Either3, select3};
-use esp_radio::ble::controller::BleConnector;
 use log::{info, warn};
 use trouble_host::prelude::*;
 
@@ -66,14 +66,20 @@ struct ControlService {
     from_device: [u8; MAX_ATT_PAYLOAD],
 }
 
-/// Runs the BLE host: advertises, accepts one central at a time and serves it.
-#[embassy_executor::task]
-pub async fn ble_task(connector: BleConnector<'static>, settings: SharedSettings) {
-    let controller: ExternalController<_, HCI_SLOTS> = ExternalController::new(connector);
+/// Runs the BLE host over the board's HCI `transport`: advertises, accepts one
+/// central at a time and serves it. `id` is a 6-byte identifier unique to the
+/// board (its Bluetooth MAC, most significant byte first), so the address stays
+/// the same across reboots.
+pub async fn run<T>(transport: T, id: [u8; 6], settings: SharedSettings)
+where
+    T: Transport,
+    T::Error: From<bt_hci::FromHciBytesError>,
+{
+    let controller: ExternalController<_, HCI_SLOTS> = ExternalController::new(transport);
     let mut resources: HostResources<_, DefaultPacketPool, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX> =
         HostResources::new();
     let stack = trouble_host::new(controller, &mut resources)
-        .set_random_address(static_address())
+        .set_random_address(static_address(id))
         .set_io_capabilities(IoCapabilities::NoInputNoOutput)
         .build();
     let mut runner = stack.runner();
@@ -114,13 +120,12 @@ pub async fn ble_task(connector: BleConnector<'static>, settings: SharedSettings
     }
 }
 
-/// A static random address derived from the chip's Bluetooth MAC, so it stays
-/// the same across reboots (bonded peers find us by it).
-fn static_address() -> Address {
-    let mac = esp_hal::efuse::interface_mac_address(esp_hal::efuse::InterfaceMacAddress::Bluetooth);
+/// A static random address derived from the board's `id`, so it stays the same
+/// across reboots (bonded peers find us by it).
+fn static_address(id: [u8; 6]) -> Address {
     let mut addr = [0u8; 6];
-    // BdAddr is little-endian; the MAC prints most significant byte first.
-    for (dst, src) in addr.iter_mut().zip(mac.as_bytes().iter().rev()) {
+    // BdAddr is little-endian; the id is most significant byte first.
+    for (dst, src) in addr.iter_mut().zip(id.iter().rev()) {
         *dst = *src;
     }
     addr[5] |= 0xC0; // static random address: the two top bits are set

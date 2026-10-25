@@ -31,9 +31,10 @@ while [ $# -gt 0 ]; do
 done
 
 . "$(dirname "$0")/_env.sh"
+use_esp_toolchain
 load_firmware_env
 
-(cd "$FIRMWARE_DIR" && cargo build --release ${cargo_args[@]+"${cargo_args[@]}"})
+(cd "$ESP_DIR" && cargo build --release ${cargo_args[@]+"${cargo_args[@]}"})
 
 # Kill espflash's own process if it hangs on a wedged port.
 with_timeout() { perl -e 'alarm shift; exec @ARGV' "$@"; }

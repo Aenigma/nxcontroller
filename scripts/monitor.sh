@@ -2,6 +2,7 @@
 # Attach to the serial log via the UART port (resets the board). Pass --port to override.
 set -euo pipefail
 . "$(dirname "$0")/_env.sh"
+use_esp_toolchain
 
 args=(--chip esp32s3 --no-stub)
 [ -f "$ELF" ] && args+=(--elf "$ELF")   # lets espflash decode backtraces

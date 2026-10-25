@@ -1,85 +1,18 @@
-//! WiFi (station, with the setup hotspot as fallback), TCP control server and
-//! UDP discovery responder.
+//! TCP control server and UDP discovery responder, on any embassy-net stack.
+//! Bringing up the WiFi radio itself is up to each board.
 
 use embassy_futures::select::{Either3, select3};
+use embassy_net::Stack;
 use embassy_net::tcp::TcpSocket;
 use embassy_net::udp::{PacketMetadata, UdpSocket};
-use embassy_net::{Runner, Stack};
-use embassy_time::{Duration, Timer};
+use embassy_time::Duration;
 use embedded_io_async::{Read, Write};
-use esp_radio::wifi::ap::AccessPointConfig;
-use esp_radio::wifi::sta::StationConfig;
-use esp_radio::wifi::{Config as WifiConfig, Interface, WifiController};
 use log::{info, warn};
 
-use crate::config::{DEVICE_NAME, SETUP_SSID};
+use crate::config::DEVICE_NAME;
 use crate::logbuf::Reader;
 use crate::protocol;
-use crate::{SharedSettings, control, restart, setup, usb};
-
-/// Failed connection attempts before the setup hotspot comes up alongside.
-const FAILURES_BEFORE_SETUP: u32 = 3;
-
-/// Joins `station` if we have credentials. Without them, or after repeated
-/// failures, opens the setup hotspot (while still retrying the network, so a
-/// router that was merely slow to boot still gets picked up).
-#[embassy_executor::task]
-pub async fn wifi_task(mut controller: WifiController<'static>, station: Option<StationConfig>) {
-    let ap = AccessPointConfig::default().with_ssid(SETUP_SSID.try_into().unwrap());
-
-    let Some(station) = station else {
-        info!("WiFi: no credentials saved");
-        match controller.set_config(&WifiConfig::AccessPoint(ap)) {
-            Ok(()) => setup::announce(),
-            Err(e) => warn!("WiFi: starting setup hotspot failed: {e:?}"),
-        }
-        // Keep the controller alive: dropping it shuts WiFi down.
-        loop {
-            Timer::after(Duration::from_secs(3600)).await;
-        }
-    };
-
-    let mut failures = 0;
-    let mut hotspot_on = false;
-    loop {
-        info!("WiFi: connecting");
-        match controller.connect_async().await {
-            Ok(_) => {
-                info!("WiFi: connected");
-                failures = 0;
-                if hotspot_on {
-                    // Back to station-only. Changing the config drops the link; reconnect.
-                    info!("WiFi: closing setup hotspot");
-                    let _ = controller.set_config(&WifiConfig::Station(station.clone()));
-                    hotspot_on = false;
-                    continue;
-                }
-                let _ = controller.wait_for_disconnect_async().await;
-                warn!("WiFi: disconnected");
-            }
-            Err(e) => {
-                warn!("WiFi: connect failed: {e:?}");
-                failures += 1;
-                if failures >= FAILURES_BEFORE_SETUP && !hotspot_on {
-                    let both = WifiConfig::AccessPointStation(station.clone(), ap.clone());
-                    match controller.set_config(&both) {
-                        Ok(()) => {
-                            hotspot_on = true;
-                            setup::announce();
-                        }
-                        Err(e) => warn!("WiFi: starting setup hotspot failed: {e:?}"),
-                    }
-                }
-            }
-        }
-        Timer::after(Duration::from_secs(3)).await;
-    }
-}
-
-#[embassy_executor::task(pool_size = 2)]
-pub async fn net_task(mut runner: Runner<'static, Interface>) -> ! {
-    runner.run().await
-}
+use crate::{SharedSettings, control, restart, usb};
 
 #[embassy_executor::task]
 pub async fn control_server_task(stack: Stack<'static>, settings: SharedSettings) {

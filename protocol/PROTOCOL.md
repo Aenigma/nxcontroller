@@ -3,7 +3,7 @@
 This file is the **contract** between `firmware/` and `python/`. The two sides
 share no code, so if you change anything here, update both:
 
-- firmware: `firmware/src/protocol.rs`
+- firmware: `firmware/core/src/protocol.rs`
 - python:   `python/src/nxcontroller/protocol.py`
 
 Bump `PROTOCOL_VERSION` on any incompatible change.

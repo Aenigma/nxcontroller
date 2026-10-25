@@ -1791,6 +1791,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "nxcontroller-core"
+version = "0.1.0"
+dependencies = [
+ "bt-hci",
+ "critical-section",
+ "embassy-executor",
+ "embassy-futures",
+ "embassy-net",
+ "embassy-sync 0.8.0",
+ "embassy-time",
+ "embassy-usb",
+ "embedded-io-async 0.7.0",
+ "log",
+ "portable-atomic",
+ "static_cell",
+ "trouble-host",
+]
+
+[[package]]
 name = "nxcontroller-firmware"
 version = "0.1.0"
 dependencies = [
@@ -1812,9 +1831,9 @@ dependencies = [
  "esp-rtos",
  "esp-storage",
  "log",
+ "nxcontroller-core",
  "smoltcp 0.14.0",
  "static_cell",
- "trouble-host",
 ]
 
 [[package]]
@@ -1859,6 +1878,9 @@ name = "portable-atomic"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "05c8b63e8d9609db387f0324918f81d68fe27748f084ef092fb35954d0539a85"
+dependencies = [
+ "critical-section",
+]
 
 [[package]]
 name = "portable-atomic-util"

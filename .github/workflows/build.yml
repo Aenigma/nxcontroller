@@ -22,7 +22,7 @@ concurrency:
 env:
   # Xtensa Rust toolchain installed by espup (rust-toolchain.toml selects "esp").
   ESP_RUST_VERSION: "1.97.0.0"
-  ELF: firmware/target/xtensa-esp32s3-none-elf/release/nxcontroller-firmware
+  ELF: firmware/esp32s3/target/xtensa-esp32s3-none-elf/release/nxcontroller-firmware
 
 jobs:
   python:
@@ -70,10 +70,21 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: firmware
+          workspaces: |
+            firmware/esp32s3
+            firmware/core
 
-      - name: Lint (ble + wifi, ble only, wifi only)
-        working-directory: firmware
+      # The shared core on its own (as a board's dependency it isn't linted),
+      # with stable Rust for an Arm target.
+      - name: Lint the core
+        run: |
+          rustup target add thumbv6m-none-eabi
+          for features in ble wifi ble,wifi; do
+            (cd firmware/core && cargo clippy --release --features "$features" --target thumbv6m-none-eabi -- -D warnings)
+          done
+
+      - name: Lint the ESP32-S3 firmware (ble + wifi, ble only, wifi only)
+        working-directory: firmware/esp32s3
         run: |
           . "$HOME/export-esp.sh"
           cargo clippy --release -- -D warnings

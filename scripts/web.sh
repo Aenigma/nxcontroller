@@ -11,6 +11,7 @@
 # `pnpm dev` in web/ (needs pnpm and Node; the firmware images are optional there).
 set -euo pipefail
 . "$(dirname "$0")/_env.sh"
+use_esp_toolchain
 
 serve=0
 [ "${1:-}" = "--serve" ] && serve=1
@@ -21,10 +22,10 @@ mkdir -p "$OUT"
 
 # Bluetooth only: no setup hotspot, no unauthenticated TCP port. firmware/.env is
 # ignored so the published image never carries your WiFi or name.
-(cd "$FIRMWARE_DIR" && env -u WIFI_SSID -u WIFI_PASSWORD -u NXC_NAME \
+(cd "$ESP_DIR" && env -u WIFI_SSID -u WIFI_PASSWORD -u NXC_NAME \
   cargo build --release --no-default-features --features ble)
 
-version="$(sed -n 's/^version *= *"\(.*\)"/\1/p' "$FIRMWARE_DIR/Cargo.toml" | head -1)"
+version="$(sed -n 's/^version *= *"\(.*\)"/\1/p' "$ESP_DIR/Cargo.toml" | head -1)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 

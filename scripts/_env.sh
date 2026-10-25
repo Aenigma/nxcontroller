@@ -1,10 +1,12 @@
 # Shared setup for firmware scripts. Sourced, not executed.
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-FIRMWARE_DIR="$ROOT_DIR/firmware"
-ELF="$FIRMWARE_DIR/target/xtensa-esp32s3-none-elf/release/nxcontroller-firmware"
+ENV_FILE="$ROOT_DIR/firmware/.env"
+ESP_DIR="$ROOT_DIR/firmware/esp32s3"   # ESP32-S3 board crate (Xtensa toolchain)
+ELF="$ESP_DIR/target/xtensa-esp32s3-none-elf/release/nxcontroller-firmware"
 
 # Xtensa toolchain env from espup (adds the linker + libclang to PATH).
-if ! command -v xtensa-esp32s3-elf-gcc >/dev/null 2>&1; then
+use_esp_toolchain() {
+  command -v xtensa-esp32s3-elf-gcc >/dev/null 2>&1 && return
   if [ -f "$HOME/export-esp.sh" ]; then
     # shellcheck disable=SC1091
     . "$HOME/export-esp.sh"
@@ -12,16 +14,17 @@ if ! command -v xtensa-esp32s3-elf-gcc >/dev/null 2>&1; then
     echo "Xtensa toolchain not found. Run scripts/setup.sh first." >&2
     exit 1
   fi
-fi
+}
 
+# firmware/.env: device name, plus WiFi for ESP32-S3 builds with WiFi.
 load_firmware_env() {
-  if [ -f "$FIRMWARE_DIR/.env" ]; then
+  if [ -f "$ENV_FILE" ]; then
     set -a
     # shellcheck disable=SC1091
-    . "$FIRMWARE_DIR/.env"
+    . "$ENV_FILE"
     set +a
   fi
-  if [ -z "${WIFI_SSID:-}" ]; then
+  if [ "${1:-}" != "--no-wifi" ] && [ -z "${WIFI_SSID:-}" ]; then
     echo "note: no WIFI_SSID in firmware/.env; the board will start the 'nxcontroller-setup' hotspot" >&2
     echo "      unless it already has WiFi saved (set it there, or with \`nxc wifi\`)." >&2
   fi
