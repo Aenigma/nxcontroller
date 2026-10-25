@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { FrameParser, KEYMAP, LSHIFT, MSG, SPECIAL, frame, parseHelloAck, prepare } from "./protocol";
+import { FrameParser, KEYMAP, LCTRL, LSHIFT, MSG, SPECIAL, frame, parseHelloAck, prepare } from "./protocol";
 
 describe("frame", () => {
   it("prefixes type and length", () => {
@@ -37,7 +37,7 @@ describe("KEYMAP", () => {
     expect(KEYMAP.get("\n")).toEqual([0, 0x28]);
     expect(KEYMAP.get(" ")).toEqual([0, 0x2c]);
     expect(KEYMAP.get("é")).toBeUndefined();
-    expect(KEYMAP.get(SPECIAL.END)).toEqual([0, 0x4d]);
+    expect(KEYMAP.get(SPECIAL.SMILEBASIC_DIRECT)).toEqual([LCTRL, 0x27]); // Ctrl+0
   });
 });
 
@@ -48,6 +48,6 @@ describe("prepare", () => {
   });
   it("counts what a US keyboard can't type", () => {
     expect(prepare("héllo ☃")).toEqual({ text: "hllo ", skipped: 2 });
-    expect(prepare("a\bb\uE000")).toEqual({ text: "ab", skipped: 2 }); // special keys never come from the text
+    expect(prepare("a\bb\uE001\uE002")).toEqual({ text: "ab", skipped: 3 }); // special keys never come from the text
   });
 });

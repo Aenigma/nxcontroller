@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BACKSPACE as BS, adaptForEditor, expandTabs } from "./editor";
+import { BACKSPACE as BS, adaptForEditor, expandTabs, smilebasicChecksum, smilebasicErase, smilebasicVerify } from "./editor";
 import { SPECIAL } from "./protocol";
 
 /** Plays keystrokes into a SmileBASIC-style editor: Enter copies the previous line's leading spaces. */
@@ -70,6 +70,44 @@ describe("adaptForEditor", () => {
   it("never sends Tab in SmileBASIC mode", () => {
     expect(adaptForEditor("\tx\ty\n", "smilebasic")).toBe(` x y${SPECIAL.END}\n${BS}`); // the empty last line undoes the carried space
     expect(adaptForEditor("\tx\ty", "smilebasic", { tabWidth: 4 })).toBe("    x   y");
+  });
+});
+
+describe("smilebasicChecksum", () => {
+  /** What the checker commands compute, line by line as SmileBASIC would. */
+  function checker(editorLines: string[]) {
+    let s = editorLines.join("\n");                      // PRGGET$() includes each line's break
+    while (s.endsWith("\n")) s = s.slice(0, -1);         // WHILE RIGHT$(S$,1)==CHR$(10) ...
+    let h = 0;
+    for (const ch of s) h = (h * 31 + ch.charCodeAt(0)) % 999983;
+    return { chars: s.length, checksum: h };
+  }
+
+  it("matches what the checker reads back after typing in SmileBASIC mode", () => {
+    const text = PROGRAM + "\tPRINT \"TAB\"\n\n\n";
+    const editor = smilebasicEditor(adaptForEditor(text, "smilebasic")).split("\n");
+    expect(checker(editor)).toEqual(smilebasicChecksum(text));
+  });
+
+  it("changes when a line break goes missing", () => {
+    expect(smilebasicChecksum("END\nCOMMON DEF F").checksum).not.toBe(smilebasicChecksum("ENDCOMMON DEF F").checksum);
+  });
+
+  it("is a small, hand-checkable hash", () => {
+    expect(smilebasicChecksum("AB\n\n")).toEqual({ chars: 2, checksum: 65 * 31 + 66 });
+  });
+
+  it("types each command with End before its Enter", () => {
+    for (const line of [...smilebasicVerify(3), smilebasicErase(3)]) {
+      expect(adaptForEditor(line + "\n", "smilebasic")).toBe(line + SPECIAL.END + "\n");
+      expect(line.length).toBeLessThan(100);
+    }
+  });
+
+  it("works on the chosen slot", () => {
+    expect(smilebasicVerify(2)[0]).toContain("PRGEDIT 2:");
+    expect(smilebasicVerify(2)[0]).toContain("PRGSIZE(2)");
+    expect(smilebasicErase(2)).toBe("PRGEDIT 2:PRGDEL -1");
   });
 });
 

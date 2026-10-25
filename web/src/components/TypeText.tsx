@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import type { Link } from "../link";
-import { EDITOR_MODES, type EditorMode, adaptForEditor } from "../editor";
-import { prepare } from "../protocol";
+import {
+  EDITOR_MODES, type EditorMode, SMILEBASIC_CLEAR_LINE, SMILEBASIC_SLOTS, adaptForEditor, smilebasicChecksum,
+  smilebasicErase, smilebasicVerify,
+} from "../editor";
+import { SPECIAL, prepare } from "../protocol";
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -21,6 +24,7 @@ export function TypeText({ link, active, online, typing, setTyping }: Props) {
   const [countdown, setCountdown] = useState("0");
   const [editor, setEditor] = useState<EditorMode>("normal");
   const [tabWidth, setTabWidth] = useState("1");
+  const [slot, setSlot] = useState(0);
   const [status, setStatus] = useState("");
   const [progress, setProgress] = useState({ value: 0, max: 1 });
   const [dropping, setDropping] = useState(false);
@@ -34,7 +38,8 @@ export function TypeText({ link, active, online, typing, setTyping }: Props) {
     const { text: typable, skipped } = prepare(text);
     const opts = { tabWidth: Math.max(1, Math.min(16, Number(tabWidth) || 1)) };
     const keys = adaptForEditor(typable, editor, opts);
-    return { keys, skipped, lines: typable ? typable.split("\n").length : 0 };
+    const expected = editor === "smilebasic" && typable ? smilebasicChecksum(typable, opts) : null;
+    return { keys, skipped, lines: typable ? typable.split("\n").length : 0, expected };
   }, [text, editor, tabWidth]);
 
   const stats = !text ? "" :
@@ -50,9 +55,10 @@ export function TypeText({ link, active, online, typing, setTyping }: Props) {
     try { await link?.releaseAll(); } catch { /* clears the board's queue at once */ }
   };
 
-  const type = async () => {
+  /** Types each part in turn, pausing `pauseMs` between them. */
+  const run = async (parts: string[], pauseMs = 0) => {
     if (!link) return;
-    const { keys } = plan;
+    const keys = parts.join("");
     if (!keys) return;
     const holdMs = Math.max(0, Math.min(255, Number(hold) || 0));
     const secsBefore = Math.max(0, Number(countdown) || 0);
@@ -62,16 +68,24 @@ export function TypeText({ link, active, online, typing, setTyping }: Props) {
     try {
       for (let i = secsBefore; i > 0 && !stopRequested.current; i--) { setStatus(`Starting in ${i}…`); await sleep(1000); }
       const start = performance.now();
-      const finished = await link.type(keys, {
-        holdMs, rollover,
-        shouldStop: () => stopRequested.current,
-        onProgress: (done, total) => {
-          setProgress({ value: done, max: total });
-          const secs = (performance.now() - start) / 1000, rate = done / Math.max(secs, 0.001);
-          setStatus(`${done.toLocaleString()} / ${total.toLocaleString()} · ${rate.toFixed(0)} chars/s · ` +
-                    `${Math.ceil((total - done) / Math.max(rate, 1))} s left`);
-        },
-      });
+      const total = keys.length;
+      let before = 0, finished = true;
+      for (const [i, part] of parts.entries()) {
+        if (i > 0 && pauseMs) { setStatus("Waiting for SmileBASIC…"); await sleep(pauseMs); }
+        finished = await link.type(part, {
+          holdMs, rollover,
+          shouldStop: () => stopRequested.current,
+          onProgress: (partDone) => {
+            const done = before + partDone;
+            setProgress({ value: done, max: total });
+            const secs = (performance.now() - start) / 1000, rate = done / Math.max(secs, 0.001);
+            setStatus(`${done.toLocaleString()} / ${total.toLocaleString()} · ${rate.toFixed(0)} chars/s · ` +
+                      `${Math.ceil((total - done) / Math.max(rate, 1))} s left`);
+          },
+        });
+        if (!finished) break;
+        before += part.length;
+      }
       const secs = (performance.now() - start) / 1000;
       setStatus(finished ? `Done: ${keys.length.toLocaleString()} keystrokes in ${secs.toFixed(1)} s.` : "Stopped.");
     } catch (e) {
@@ -79,6 +93,21 @@ export function TypeText({ link, active, online, typing, setTyping }: Props) {
       try { await link.releaseAll(); } catch { /* already gone */ }
     }
     setTyping(false);
+  };
+
+  const type = () => run([plan.keys]);
+  // To DIRECT mode, run whatever is on the input line as a comment, then the commands.
+  // Each ends in Enter, which runs it: give it a second before the next.
+  const direct = (commands: readonly string[]) => run([
+    SPECIAL.SMILEBASIC_DIRECT,
+    SMILEBASIC_CLEAR_LINE,
+    ...commands.map((line) => adaptForEditor(line + "\n", "smilebasic")),
+  ], 1000);
+  const verify = () => direct(smilebasicVerify(slot));
+  const erase = () => {
+    if (confirm(`Erase every line of program slot ${slot} in SmileBASIC? Save it first if you need it: this can't be undone.`)) {
+      void direct([smilebasicErase(slot)]);
+    }
   };
 
   return (
@@ -120,6 +149,17 @@ export function TypeText({ link, active, online, typing, setTyping }: Props) {
         <span class="muted">{status}</span>
       </div>
       <progress value={progress.value} max={progress.max} />
+      {plan.expected && (
+        <div class="row mt12">
+          <label>Slot <select value={slot} onChange={(e) => setSlot(Number(e.currentTarget.value))}>
+            {SMILEBASIC_SLOTS.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select></label>
+          <button class="secondary" onClick={verify} disabled={!active || typing}>Verify slot {slot}</button>
+          <button class="secondary" onClick={erase} disabled={!active || typing}>Clear slot {slot}</button>
+          <span class="muted">SmileBASIC should then print{" "}
+            <b>{plan.expected.chars}</b> and <b>{plan.expected.checksum}</b> (see Help).</span>
+        </div>
+      )}
       <p class="step-note"><b>Hold</b> is how long each key stays down and up: 20&nbsp;ms is reliable on a Switch 2,
         0 is fastest on a computer. <b>Rollover</b> goes straight from one key to the next, about twice as fast.{" "}
         <b>Countdown</b> gives you time to click into the target window. <b>Editor</b> makes up for what the target

@@ -42,6 +42,21 @@ export function Help() {
         </ul>
       </details>
       <details>
+        <summary>Checking a program typed into SmileBASIC</summary>
+        <p>The board can't see what SmileBASIC did with the keys, but SmileBASIC can check itself:</p>
+        <ol>
+          <li>Type the program into a slot with <b>Editor</b> set to <b>SmileBASIC</b>. Leave the text in the box.</li>
+          <li>Pick that <b>Slot</b> and click <b>Verify slot</b>. The board presses <kbd>Ctrl</kbd>+<kbd>0</kbd> to switch to <b>DIRECT</b> mode, turns anything already
+            on the input line into a comment, then types three short commands, a second apart, that clear the screen, read the slot and print
+            two numbers: its length in characters, and a checksum.</li>
+          <li>Compare them with the numbers next to the button. If both match, SmileBASIC holds exactly the text in the box.
+            If not, something was lost or changed: type it again.</li>
+        </ol>
+        <p><b>Clear slot</b> erases the program in the slot the same way (<code>PRGEDIT 0:PRGDEL -1</code> for slot 0), so you can
+          start typing into an empty program. It asks first, since it can't be undone.</p>
+        <p>The commands leave the variables <code>S$</code>, <code>H</code> and <code>I</code> set. Empty lines at the end don't count.</p>
+      </details>
+      <details>
         <summary>Seeing the board's log</summary>
         <p>While connected, the <b>Logs</b> section on this tab shows the board's recent output, live. Without a connection, plug
           the <b>UART</b> port into a computer and open it at 115200 baud (e.g. with <code>espflash monitor</code>),

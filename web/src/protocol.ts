@@ -27,6 +27,7 @@ export const MAX_TYPE_KEYS = 126;
 export const TYPE_WINDOW = 256; // keystrokes allowed outstanding on the board
 export const STALL_TIMEOUT_MS = 5000;
 export const KEY_ENTER = 0x28;
+export const LCTRL = 0x01;
 export const LSHIFT = 0x02;
 export const CAREFUL_KEYS: ReadonlySet<number> = new Set([KEY_ENTER]); // typed alone, after a release, held >= 20 ms
 export const CAREFUL_HOLD_MS = 20;
@@ -71,7 +72,10 @@ export function parseHelloAck(payload: Uint8Array): DeviceInfo {
 }
 
 /** Keys with no character of their own, written as stand-ins. Only editor.ts puts them in text to type. */
-export const SPECIAL = { BACKSPACE: "\b", END: "\uE000" } as const;
+export const SPECIAL = {
+  BACKSPACE: "\b", END: "\uE000", HOME: "\uE002",
+  SMILEBASIC_DIRECT: "\uE001", // Ctrl+0: SmileBASIC 4 switches to DIRECT mode (does nothing if already there)
+} as const;
 const SPECIAL_KEYS: ReadonlySet<string> = new Set(Object.values(SPECIAL));
 
 // US layout: character -> [modifiers, HID usage]
@@ -85,10 +89,11 @@ function buildKeymap(): Map<string, Key> {
   }
   "1234567890".split("").forEach((d, i) => map.set(d, [0, 0x1e + i]));
   const plain: Record<string, number> = {
-    "\n": 0x28, [SPECIAL.BACKSPACE]: 0x2a, [SPECIAL.END]: 0x4d, "\t": 0x2b, " ": 0x2c, "-": 0x2d, "=": 0x2e, "[": 0x2f, "]": 0x30,
+    "\n": 0x28, [SPECIAL.BACKSPACE]: 0x2a, [SPECIAL.END]: 0x4d, [SPECIAL.HOME]: 0x4a, "\t": 0x2b, " ": 0x2c, "-": 0x2d, "=": 0x2e, "[": 0x2f, "]": 0x30,
     "\\": 0x31, ";": 0x33, "'": 0x34, "`": 0x35, ",": 0x36, ".": 0x37, "/": 0x38,
   };
   for (const [ch, key] of Object.entries(plain)) map.set(ch, [0, key]);
+  map.set(SPECIAL.SMILEBASIC_DIRECT, [LCTRL, 0x27]);
   const shifted = '!@#$%^&*()_+{}|:"~<>?', base = "1234567890-=[]\\;'`,./";
   shifted.split("").forEach((ch, i) => map.set(ch, [LSHIFT, map.get(base[i]!)![1]]));
   return map;
