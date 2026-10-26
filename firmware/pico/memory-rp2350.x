@@ -1,6 +1,6 @@
-/* Pico 2 W: RP2350, 4 MiB flash. The last 4 KiB sector holds the settings. */
+/* Pico 2 W (RP2350). build.rs fills in the flash size, minus the settings sector at the end. */
 MEMORY {
-    FLASH : ORIGIN = 0x10000000, LENGTH = 4096K - 4K
+    FLASH : ORIGIN = 0x10000000, LENGTH = {FLASH_SIZE} - {SETTINGS_SIZE}
     RAM   : ORIGIN = 0x20000000, LENGTH = 512K
     SRAM4 : ORIGIN = 0x20080000, LENGTH = 4K
     SRAM5 : ORIGIN = 0x20081000, LENGTH = 4K

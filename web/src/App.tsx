@@ -9,6 +9,7 @@ import { Wifi } from "./components/Wifi";
 import { Link } from "./link";
 import { LogBuffer } from "./logs";
 import { FEATURE, MODE_NAMES } from "./protocol";
+import { load, save } from "./storage";
 
 type Tab = "control" | "setup";
 const TABS: { id: Tab; label: string }[] = [
@@ -18,8 +19,8 @@ const TABS: { id: Tab; label: string }[] = [
 
 // Remembered per browser: a board has connected before, so open on Control.
 const CONNECTED_KEY = "nxcontroller.connected-before";
-const remembered = (): boolean => { try { return localStorage.getItem(CONNECTED_KEY) === "1"; } catch { return false; } };
-const remember = () => { try { localStorage.setItem(CONNECTED_KEY, "1"); } catch { /* storage unavailable */ } };
+const remembered = (): boolean => load(CONNECTED_KEY) === "1";
+const remember = () => save(CONNECTED_KEY, "1");
 
 /** The tab named in the URL hash (#control / #setup), if any. */
 const parseTab = (): Tab | undefined => TABS.find((t) => `#${t.id}` === location.hash)?.id;

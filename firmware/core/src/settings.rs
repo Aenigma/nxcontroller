@@ -1,7 +1,9 @@
 //! Persisted settings: USB mode and WiFi credentials.
 //!
 //! Stored as one small record in one flash sector that each board sets aside
-//! (see [`Storage`]). Erasing the flash resets everything to defaults.
+//! (see [`SectorStorage`]). Erasing the flash resets everything to defaults.
+
+use embedded_storage::nor_flash::{NorFlash, ReadNorFlash};
 
 const MAGIC: [u8; 4] = *b"NXCM";
 
@@ -63,6 +65,32 @@ pub trait Storage: Send {
     fn read(&mut self, record: &mut [u8]) -> Result<(), SettingsError>;
     /// Erases the sector, then writes `record` at its start.
     fn write(&mut self, record: &[u8]) -> Result<(), SettingsError>;
+}
+
+/// [`Storage`] on one erase sector of a NOR flash, starting at `offset`.
+pub struct SectorStorage<F> {
+    flash: F,
+    offset: u32,
+}
+
+impl<F: NorFlash> SectorStorage<F> {
+    pub fn new(flash: F, offset: u32) -> Self {
+        Self { flash, offset }
+    }
+}
+
+impl<F: NorFlash + Send> Storage for SectorStorage<F> {
+    fn read(&mut self, record: &mut [u8]) -> Result<(), SettingsError> {
+        ReadNorFlash::read(&mut self.flash, self.offset, record).map_err(|_| SettingsError::Flash)
+    }
+
+    fn write(&mut self, record: &[u8]) -> Result<(), SettingsError> {
+        let end = self.offset + F::ERASE_SIZE as u32;
+        self.flash
+            .erase(self.offset, end)
+            .map_err(|_| SettingsError::Flash)?;
+        NorFlash::write(&mut self.flash, self.offset, record).map_err(|_| SettingsError::Flash)
+    }
 }
 
 pub struct Settings {

@@ -8,15 +8,17 @@ use critical_section::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use log::{Level, LevelFilter, Log, Metadata, Record};
+use static_cell::StaticCell;
 
 /// Bytes of recent log output kept for LOGS.
 const CAPACITY: usize = 8 * 1024;
 /// Longest log line kept (longer lines are cut, ending in "…").
 const LINE_MAX: usize = 240;
-/// Log filter, same syntax as esp-println: `level` and `target=level`, comma-separated.
-const FILTER: &str = match option_env!("ESP_LOG") {
-    Some(filter) => filter,
-    None => "info",
+/// Log filter at build time, same syntax as esp-println: `level` and `target=level`,
+/// comma-separated. From `NXC_LOG`, else `ESP_LOG` (what esp-println reads), else info.
+const FILTER: &str = match (option_env!("NXC_LOG"), option_env!("ESP_LOG")) {
+    (Some(filter), _) | (None, Some(filter)) => filter,
+    (None, None) => "info",
 };
 
 struct Ring {
@@ -99,17 +101,21 @@ pub async fn wait_for_output(reader: Reader) {
     NEW_OUTPUT[reader as usize].wait().await;
 }
 
-/// Installs the logger. Call once, first thing at boot.
-pub(crate) fn init() {
-    static LOGGER: BufferLogger = BufferLogger;
+/// Installs the logger, printing to `console` too if the board has one. Call
+/// once, first thing at boot.
+pub(crate) fn init(console: Option<fn(core::fmt::Arguments<'_>)>) {
+    static LOGGER: StaticCell<BufferLogger> = StaticCell::new();
+    let logger: &'static BufferLogger = LOGGER.init(BufferLogger { console });
     // SAFETY: called once at boot, before anything else logs (as esp-println does).
     unsafe {
-        let _ = log::set_logger_racy(&LOGGER);
+        let _ = log::set_logger_racy(logger);
         log::set_max_level_racy(max_level());
     }
 }
 
-struct BufferLogger;
+struct BufferLogger {
+    console: Option<fn(core::fmt::Arguments<'_>)>,
+}
 
 impl Log for BufferLogger {
     fn enabled(&self, metadata: &Metadata) -> bool {
@@ -124,19 +130,16 @@ impl Log for BufferLogger {
         let _ = write!(line, "{} - {}", record.level(), record.args());
         let text = line.finish();
 
-        let (color, reset) = match record.level() {
-            Level::Error => ("\u{1b}[31m", "\u{1b}[0m"),
-            Level::Warn => ("\u{1b}[33m", "\u{1b}[0m"),
-            Level::Info => ("\u{1b}[32m", "\u{1b}[0m"),
-            Level::Debug => ("\u{1b}[34m", "\u{1b}[0m"),
-            Level::Trace => ("\u{1b}[35m", "\u{1b}[0m"),
-        };
-        // Console without the trailing newline (the board's println adds one).
-        if let Some(print) = crate::board().and_then(|b| b.console) {
-            print(format_args!(
-                "{color}{}{reset}",
-                text.trim_end_matches('\n')
-            ));
+        if let Some(print) = self.console {
+            let color = match record.level() {
+                Level::Error => "\u{1b}[31m",
+                Level::Warn => "\u{1b}[33m",
+                Level::Info => "\u{1b}[32m",
+                Level::Debug => "\u{1b}[34m",
+                Level::Trace => "\u{1b}[35m",
+            };
+            // Without the trailing newline: the board's println adds one.
+            print(format_args!("{color}{}\u{1b}[0m", text.trim_end_matches('\n')));
         }
 
         critical_section::with(|cs| RING.borrow_ref_mut(cs).push(text.as_bytes()));

@@ -16,6 +16,7 @@ embassy-sync      = "0.8.0"
 embassy-time      = "0.5.1"
 embassy-usb       = { version = "0.6", default-features = false }
 embedded-io-async = "0.7.0"
+embedded-storage  = "0.3.1"
 log               = "0.4.27"
 # Atomics everywhere: the RP2040 (Cortex-M0+) has no compare-and-swap.
 portable-atomic   = { version = "1.11", default-features = false, features = ["critical-section"] }

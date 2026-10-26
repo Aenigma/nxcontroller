@@ -25,7 +25,7 @@ mkdir -p "$OUT"
 # ignored so the published image never carries your WiFi or name.
 (cd "$ESP_DIR" && env -u WIFI_SSID -u WIFI_PASSWORD -u NXC_NAME \
   cargo build --release --no-default-features --features ble)
-env -u WIFI_SSID -u WIFI_PASSWORD -u NXC_NAME NXC_NO_ENV=1 "$ROOT_DIR/scripts/pico.sh" "$OUT"
+(unset NXC_NAME; build_pico_uf2 "$OUT")
 
 version="$(sed -n 's/^version *= *"\(.*\)"/\1/p' "$ESP_DIR/Cargo.toml" | head -1)"
 tmp="$(mktemp -d)"

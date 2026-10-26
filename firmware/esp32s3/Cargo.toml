@@ -24,7 +24,7 @@ esp-bootloader-esp-idf = { version = "0.6.0", features = ["esp32s3", "log-04"] }
 # Flash writes (saved settings) must run with interrupts off: while the flash is
 # busy, any interrupt handler that lives in flash would freeze the chip.
 # esp-bootloader-esp-idf pulls esp-storage in with default features disabled.
-esp-storage = { version = "0.10.0", features = ["esp32s3", "critical-section"] }
+esp-storage = { version = "0.10.0", features = ["esp32s3", "critical-section", "embedded-storage"] }
 log                    = "0.4.27"
 
 embassy-net = { version = "0.9.1", optional = true, features = [
@@ -34,8 +34,6 @@ embassy-net = { version = "0.9.1", optional = true, features = [
   "tcp",
   "udp",
 ] }
-embedded-io = "0.7.1"
-embedded-io-async = "0.7.0"
 esp-alloc = { version = "0.11.0", features = ["esp32s3"] }
 esp-backtrace = { version = "0.20.0", features = [
   "esp32s3",
@@ -68,9 +66,6 @@ smoltcp = { version = "0.14.0", optional = true, default-features = false, featu
 
 critical-section = "1.2.0"
 static_cell      = "2.1.1"
-embassy-usb = { version = "0.6", default-features = false }
-embassy-sync = "0.8.0"
-embassy-futures = "0.1.2"
 
 [features]
 # Source builds get both transports. The web page's firmware is `--no-default-features

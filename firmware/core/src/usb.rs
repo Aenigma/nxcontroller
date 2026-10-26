@@ -22,7 +22,7 @@ use embassy_usb::{Builder, Handler, UsbDevice, UsbVersion};
 use log::{info, warn};
 use static_cell::StaticCell;
 
-use crate::settings::Mode;
+use crate::settings::{Mode, Settings};
 
 static MODE: AtomicU8 = AtomicU8::new(Mode::DEFAULT as u8);
 
@@ -364,7 +364,15 @@ pub struct UsbParts<D: Driver<'static>> {
     pub keyboard: Option<HidWriter<'static, D, 8>>,
 }
 
-pub fn build<D: Driver<'static>>(driver: D, mode: Mode, keyboard_poll_ms: u8) -> UsbParts<D> {
+/// Builds the USB device for the saved mode. Boards call this through
+/// [`usb_tasks!`](crate::usb_tasks), which also starts its tasks.
+pub fn build<D: Driver<'static>>(driver: D, settings: &Settings) -> UsbParts<D> {
+    let mode = settings.mode();
+    let keyboard_poll_ms = settings.keyboard_poll_ms();
+    info!("USB mode: {mode:?}");
+    if mode.has_keyboard() {
+        info!("keyboard poll interval: {keyboard_poll_ms} ms");
+    }
     MODE.store(mode as u8, Ordering::Relaxed);
     let id = if mode.has_gamepad() {
         GAMEPAD_IDENTITY
@@ -599,4 +607,55 @@ async fn hold(ms: u8) {
     if ms > 0 {
         Timer::after(Duration::from_millis(u64::from(ms))).await;
     }
+}
+
+/// Defines `mod usb_tasks` for a board's USB driver type (give it as a full path):
+/// the device, gamepad and keyboard tasks (Embassy tasks can't be generic), and
+/// `usb_tasks::spawn(spawner, driver, &settings)`, which builds the device for the
+/// saved mode and starts them.
+#[macro_export]
+macro_rules! usb_tasks {
+    ($driver:ty) => {
+        #[allow(
+            clippy::large_stack_frames,
+            reason = "a task's future lives in static task storage, not on a stack"
+        )]
+        mod usb_tasks {
+            use $crate::__embassy_usb::UsbDevice;
+            use $crate::__embassy_usb::class::hid::{HidReaderWriter, HidWriter};
+            use $crate::usb;
+
+            type Driver = $driver;
+
+            pub fn spawn(
+                spawner: ::embassy_executor::Spawner,
+                driver: Driver,
+                settings: &$crate::settings::Settings,
+            ) {
+                let parts = usb::build(driver, settings);
+                spawner.spawn(device_task(parts.device).unwrap());
+                if let Some(gamepad) = parts.gamepad {
+                    spawner.spawn(gamepad_task(gamepad).unwrap());
+                }
+                if let Some(keyboard) = parts.keyboard {
+                    spawner.spawn(keyboard_task(keyboard).unwrap());
+                }
+            }
+
+            #[::embassy_executor::task]
+            async fn device_task(device: UsbDevice<'static, Driver>) -> ! {
+                usb::run_device(device).await
+            }
+
+            #[::embassy_executor::task]
+            async fn gamepad_task(hid: HidReaderWriter<'static, Driver, 8, 8>) {
+                usb::run_gamepad(hid).await
+            }
+
+            #[::embassy_executor::task]
+            async fn keyboard_task(writer: HidWriter<'static, Driver, 8>) {
+                usb::run_keyboard(writer).await
+            }
+        }
+    };
 }

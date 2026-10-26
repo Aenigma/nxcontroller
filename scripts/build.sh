@@ -5,6 +5,7 @@ set -euo pipefail
 . "$(dirname "$0")/_env.sh"
 use_esp_toolchain
 load_firmware_env
+warn_no_wifi
 
 cd "$ESP_DIR"
 cargo build --release "$@"

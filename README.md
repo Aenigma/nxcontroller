@@ -22,13 +22,13 @@ connects to a board over Bluetooth).
 
 | Path        | What                                                  | Toolchain                     |
 |-------------|-------------------------------------------------------|-------------------------------|
-| `firmware/core/` | Rust `no_std` library shared by every board: protocol, USB HID, BLE, TCP, settings, logs (embassy, trouble-host) | – (built by a board crate) |
+| `firmware/core/` | Rust `no_std` library shared by every board: protocol, USB HID, BLE, TCP, settings, logs (embassy, trouble-host) | stable Rust (workspace with `pico/`) |
 | `firmware/esp32s3/` | ESP32-S3 board (esp-hal, esp-radio)            | Xtensa Rust via `espup`       |
 | `firmware/pico/` | Pico W (RP2040) and Pico 2 W (RP2350) board, Bluetooth only (embassy-rp, cyw43) | stable Rust |
 | `python/`   | `nxcontroller` package and `nxc` CLI                  | Python ≥3.10, `uv`            |
 | `web/`      | The single page: installer (ESP Web Tools) + remote (Web Bluetooth). Preact + Vite + TypeScript | Node + `pnpm` (`scripts/web.sh` builds it) |
 | `protocol/` | `PROTOCOL.md`, the wire contract between them         | –                             |
-| `scripts/`  | setup / build / flash / monitor / test, `pico.sh`, `web.sh` | bash                    |
+| `scripts/`  | setup / build / flash / monitor / test / lint, `pico.sh`, `web.sh` | bash             |
 
 `firmware/` and `python/` share no code and no build system. Each builds,
 versions and ships on its own. They are coupled only through
@@ -70,9 +70,10 @@ onto the drive that appears (`RPI-RP2` on a Pico W, `RP2350` on a Pico 2 W). The
 Pico restarts into the firmware. It has one USB port, which becomes the
 gamepad/keyboard, and no serial console: read its log from the web page (Setup →
 Logs). The Pico firmware is Bluetooth only and stores its settings in the last
-4 KiB flash sector. Its Embassy crates are pinned to one git commit (see
-`firmware/pico/Cargo.toml`), the one where `cyw43`'s Bluetooth matches
-trouble-host 0.7, and the CYW43439 radio firmware is vendored in
+4 KiB flash sector. `firmware/` is a Cargo workspace of `core/` and `pico/` (one
+lockfile and target directory; `esp32s3/` stays outside with its own toolchain).
+Its Embassy crates are pinned to one git commit (see `firmware/Cargo.toml`), the
+one where `cyw43`'s Bluetooth matches trouble-host 0.7, and the CYW43439 radio firmware is vendored in
 `firmware/pico/cyw43-firmware/` (Infineon permissive binary license).
 
 ### Wiring and flashing (ESP32-S3)
@@ -121,7 +122,7 @@ make mock                                   # fake device on 127.0.0.1:7700 (add
 cd python && uv run nxc --host 127.0.0.1 ping
 ```
 
-`scripts/test.sh` runs the Python tests against the mock and runs clippy on the core and every board.
+`scripts/test.sh` runs the Python tests against the mock, then `scripts/lint.sh` (clippy on the core and every board; `scripts/lint.sh core pico` needs only stable Rust).
 
 ## Firmware notes
 
@@ -176,5 +177,6 @@ cd python && uv run nxc --host 127.0.0.1 ping
   about 356 chars/s at 1 ms (`nxc keyboard-poll 1`; `nxc keyboard-poll 0` restores 5 ms).
   `examples/typing_benchmark.py` measures it on your setup.
 - WiFi power saving is disabled for latency.
+- Log level: set `NXC_LOG` (or `ESP_LOG`) when building, e.g. `NXC_LOG=debug`, or `info,nxcontroller_core::usb=debug`.
 - Toolchains: `firmware/esp32s3/rust-toolchain.toml` pins the `esp` channel (run
   `espup update` to upgrade it); `firmware/pico/rust-toolchain.toml` uses stable.

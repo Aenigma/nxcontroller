@@ -1,0 +1,34 @@
+# The core and the Pico board share one workspace: one lockfile, one target
+# directory, and the same (patched) Embassy for both. The ESP32-S3 board stays
+# outside: it builds with its own Xtensa toolchain and lockfile.
+[workspace]
+resolver = "3"
+members  = ["core", "pico"]
+exclude  = ["esp32s3"]
+
+[profile.release]
+codegen-units = 1
+debug         = 2
+lto           = "fat"
+opt-level     = "s"
+
+[profile.dev]
+opt-level = "s"
+
+# cyw43's Bluetooth support speaks the same bt-hci (0.9) as trouble-host 0.7 only
+# at this Embassy commit, which is what trouble-host 0.7.0's own Pico examples
+# use. Every Embassy crate comes from it, so the traits line up.
+[patch.crates-io]
+cyw43                     = { git = "https://github.com/embassy-rs/embassy.git", rev = "1d3c3de" }
+cyw43-pio                 = { git = "https://github.com/embassy-rs/embassy.git", rev = "1d3c3de" }
+embassy-embedded-hal      = { git = "https://github.com/embassy-rs/embassy.git", rev = "1d3c3de" }
+embassy-executor          = { git = "https://github.com/embassy-rs/embassy.git", rev = "1d3c3de" }
+embassy-futures           = { git = "https://github.com/embassy-rs/embassy.git", rev = "1d3c3de" }
+embassy-hal-internal      = { git = "https://github.com/embassy-rs/embassy.git", rev = "1d3c3de" }
+embassy-net-driver-channel = { git = "https://github.com/embassy-rs/embassy.git", rev = "1d3c3de" }
+embassy-rp                = { git = "https://github.com/embassy-rs/embassy.git", rev = "1d3c3de" }
+embassy-sync              = { git = "https://github.com/embassy-rs/embassy.git", rev = "1d3c3de" }
+embassy-time              = { git = "https://github.com/embassy-rs/embassy.git", rev = "1d3c3de" }
+embassy-time-driver       = { git = "https://github.com/embassy-rs/embassy.git", rev = "1d3c3de" }
+embassy-usb               = { git = "https://github.com/embassy-rs/embassy.git", rev = "1d3c3de" }
+embassy-usb-driver        = { git = "https://github.com/embassy-rs/embassy.git", rev = "1d3c3de" }

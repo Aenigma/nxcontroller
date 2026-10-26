@@ -1,21 +1,20 @@
 import { useEffect, useState } from "preact/hooks";
+import { load, save } from "../storage";
 
-/** Boards the page has firmware for. The remote works the same with each. */
+/** Boards the page has firmware for. The remote works the same with each.
+ *  `uf2` names match PICO_CHIPS in scripts/_env.sh, which writes them to firmware/. */
 export const BOARDS = [
   { id: "esp32s3", label: "ESP32-S3" },
-  { id: "pico2w", label: "Raspberry Pi Pico 2 W", uf2: "firmware/nxcontroller-pico2-w.uf2", drive: "RP2350" },
-  { id: "picow", label: "Raspberry Pi Pico W", uf2: "firmware/nxcontroller-pico-w.uf2", drive: "RPI-RP2" },
+  { id: "pico2w", label: "Raspberry Pi Pico 2 W", uf2: "nxcontroller-pico2-w.uf2", drive: "RP2350" },
+  { id: "picow", label: "Raspberry Pi Pico W", uf2: "nxcontroller-pico-w.uf2", drive: "RPI-RP2" },
 ] as const;
 type BoardId = (typeof BOARDS)[number]["id"];
 
 const BOARD_KEY = "nxcontroller.board";
 
 function savedBoard(): BoardId {
-  try {
-    const saved = localStorage.getItem(BOARD_KEY);
-    if (BOARDS.some((b) => b.id === saved)) return saved as BoardId;
-  } catch { /* storage unavailable: use the default */ }
-  return "esp32s3";
+  const saved = load(BOARD_KEY);
+  return BOARDS.some((b) => b.id === saved) ? saved as BoardId : "esp32s3";
 }
 
 export function Install() {
@@ -31,7 +30,7 @@ export function Install() {
 
   const choose = (id: BoardId) => {
     setBoard(id);
-    try { localStorage.setItem(BOARD_KEY, id); } catch { /* not remembered, that's all */ }
+    save(BOARD_KEY, id);
   };
   const chosen = BOARDS.find((b) => b.id === board)!;
 
@@ -75,14 +74,13 @@ function EspSteps({ version }: { version: string }) {
 }
 
 function PicoSteps({ uf2, drive, version }: { uf2: string; drive: string; version: string }) {
-  const file = uf2.split("/").pop()!;
   return (
     <>
       <p class="muted intro">The Pico installs from a file: no special browser needed. Use a USB cable that carries data.</p>
       <ol>
         <li>Download the firmware.
           <div class="row install-row">
-            <a class="button" href={uf2} download={file}>Download {file}</a>
+            <a class="button" href={`firmware/${uf2}`} download={uf2}>Download {uf2}</a>
             <span class="muted">{version}</span>
           </div>
         </li>

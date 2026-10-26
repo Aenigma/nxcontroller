@@ -53,6 +53,18 @@ jobs:
           pnpm typecheck
           pnpm test
 
+  # The shared core and the Pico boards: stable Rust only (firmware/rust-toolchain.toml
+  # adds the Arm targets), so this runs alongside the ESP32-S3 toolchain install.
+  pico:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: firmware
+      - name: Lint the core and the Pico firmware
+        run: scripts/lint.sh core pico
+
   firmware:
     runs-on: ubuntu-latest
     steps:
@@ -72,28 +84,12 @@ jobs:
         with:
           workspaces: |
             firmware/esp32s3
-            firmware/pico
-            firmware/core
-
-      # Pico W / Pico 2 W and the shared core build with stable Rust; their
-      # rust-toolchain.toml adds the two Arm targets.
-      - name: Lint the core and the Pico firmware
-        run: |
-          rustup target add thumbv6m-none-eabi thumbv8m.main-none-eabihf
-          for features in ble wifi ble,wifi; do
-            (cd firmware/core && cargo clippy --release --features "$features" --target thumbv6m-none-eabi -- -D warnings)
-          done
-          cd firmware/pico
-          cargo clippy --release --features rp2040 --target thumbv6m-none-eabi -- -D warnings
-          cargo clippy --release --features rp2350 --target thumbv8m.main-none-eabihf -- -D warnings
+            firmware
 
       - name: Lint the ESP32-S3 firmware (ble + wifi, ble only, wifi only)
-        working-directory: firmware/esp32s3
         run: |
           . "$HOME/export-esp.sh"
-          cargo clippy --release -- -D warnings
-          cargo clippy --release --no-default-features --features ble -- -D warnings
-          cargo clippy --release --no-default-features --features wifi -- -D warnings
+          scripts/lint.sh esp32s3
 
       # pnpm's version comes from "packageManager" in web/package.json.
       - uses: pnpm/action-setup@v6
@@ -130,7 +126,7 @@ jobs:
 
   pages:
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
-    needs: [python, web, firmware]
+    needs: [python, web, pico, firmware]
     runs-on: ubuntu-latest
     permissions:
       pages: write
@@ -144,7 +140,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [python, web, firmware]
+    needs: [python, web, pico, firmware]
     runs-on: ubuntu-latest
     permissions:
       contents: write

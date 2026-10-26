@@ -19,26 +19,18 @@ mod storage;
 mod wifi_radio;
 
 use embassy_executor::Spawner;
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::mutex::Mutex;
-use embassy_usb::UsbDevice;
-use embassy_usb::class::hid::{HidReaderWriter, HidWriter};
 use esp_backtrace as _;
 use esp_bootloader_esp_idf::partitions::FlashStorage;
 use esp_hal::clock::CpuClock;
 use esp_hal::timer::timg::TimerGroup;
 use esp_hal::usb::otg::{Usb, embassy_usb_device};
-use log::info;
-use nxcontroller_core::config::DEVICE_NAME;
-use nxcontroller_core::settings::{Settings, Storage};
-use nxcontroller_core::{Board, SharedSettings, usb};
+use nxcontroller_core::Board;
+use nxcontroller_core::settings::{SectorStorage, Settings, Storage};
 use static_cell::StaticCell;
 
-use crate::storage::NvsStorage;
-
-type UsbDriver = embassy_usb_device::Driver<'static>;
-
 extern crate alloc;
+
+nxcontroller_core::usb_tasks!(esp_hal::usb::otg::embassy_usb_device::Driver<'static>);
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
 esp_bootloader_esp_idf::esp_app_desc!();
@@ -66,13 +58,7 @@ async fn main(spawner: Spawner) -> ! {
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
 
-    info!(
-        "nxcontroller v{} '{}' booting (ble: {}, wifi: {})",
-        env!("CARGO_PKG_VERSION"),
-        DEVICE_NAME,
-        cfg!(feature = "ble"),
-        cfg!(feature = "wifi"),
-    );
+    nxcontroller_core::log_boot("ESP32-S3", env!("CARGO_PKG_VERSION"));
 
     // --- USB HID (native USB port: GPIO20 = D+, GPIO19 = D-) ---
     static EP_OUT_BUFFER: StaticCell<[u8; 1024]> = StaticCell::new();
@@ -82,27 +68,12 @@ async fn main(spawner: Spawner) -> ! {
         EP_OUT_BUFFER.init([0; 1024]),
         embassy_usb_device::Config::default(),
     );
-    static STORAGE: StaticCell<NvsStorage> = StaticCell::new();
-    let storage = NvsStorage::new(FlashStorage::new(peripherals.FLASH))
+    static STORAGE: StaticCell<SectorStorage<FlashStorage<'static>>> = StaticCell::new();
+    let storage = storage::nvs(FlashStorage::new(peripherals.FLASH))
         .map(|nvs| STORAGE.init(nvs) as &'static mut dyn Storage);
     let settings = Settings::new(storage);
-    let mode = settings.mode();
-    info!("USB mode: {mode:?}");
-    let keyboard_poll_ms = settings.keyboard_poll_ms();
-    if mode.has_keyboard() {
-        info!("keyboard poll interval: {keyboard_poll_ms} ms");
-    }
-    let parts = usb::build(driver, mode, keyboard_poll_ms);
-    spawner.spawn(tasks::usb_device_task(parts.device).unwrap());
-    if let Some(gamepad) = parts.gamepad {
-        spawner.spawn(tasks::gamepad_task(gamepad).unwrap());
-    }
-    if let Some(keyboard) = parts.keyboard {
-        spawner.spawn(tasks::keyboard_task(keyboard).unwrap());
-    }
-
-    static SETTINGS: StaticCell<Mutex<CriticalSectionRawMutex, Settings>> = StaticCell::new();
-    let settings: SharedSettings = SETTINGS.init(Mutex::new(settings));
+    usb_tasks::spawn(spawner, driver, &settings);
+    let settings = nxcontroller_core::share(settings);
 
     // --- WiFi (feature `wifi`) ---
     // Initialised before BLE: with both, they share the radio through `coex`.
@@ -115,7 +86,7 @@ async fn main(spawner: Spawner) -> ! {
         let connector =
             esp_radio::ble::controller::BleConnector::new(peripherals.BT, Default::default())
                 .expect("failed to initialize BLE");
-        spawner.spawn(tasks::ble_task(connector, settings).unwrap());
+        spawner.spawn(ble::task(connector, settings).unwrap());
     }
 
     #[cfg(feature = "wifi")]
@@ -134,40 +105,25 @@ fn console(line: core::fmt::Arguments<'_>) {
     esp_println::println!("{line}");
 }
 
-/// Tasks can't be generic, so the core's USB and BLE loops run in these.
+/// The core's BLE loop, over the chip's own controller. (Tasks can't be generic.)
+#[cfg(feature = "ble")]
 #[allow(
     clippy::large_stack_frames,
     reason = "a task's future lives in static task storage, not on a stack"
 )]
-mod tasks {
-    use super::*;
+mod ble {
+    use esp_hal::efuse::{InterfaceMacAddress, interface_mac_address};
+    use esp_radio::ble::controller::BleConnector;
+    use nxcontroller_core::SharedSettings;
 
     #[embassy_executor::task]
-    pub async fn usb_device_task(device: UsbDevice<'static, UsbDriver>) -> ! {
-        usb::run_device(device).await
-    }
-
-    #[embassy_executor::task]
-    pub async fn gamepad_task(hid: HidReaderWriter<'static, UsbDriver, 8, 8>) {
-        usb::run_gamepad(hid).await
-    }
-
-    #[embassy_executor::task]
-    pub async fn keyboard_task(writer: HidWriter<'static, UsbDriver, 8>) {
-        usb::run_keyboard(writer).await
-    }
-
-    #[cfg(feature = "ble")]
-    #[embassy_executor::task]
-    pub async fn ble_task(
-        connector: esp_radio::ble::controller::BleConnector<'static>,
-        settings: SharedSettings,
-    ) {
+    pub async fn task(connector: BleConnector<'static>, settings: SharedSettings) {
         // The chip's Bluetooth MAC, so the address stays the same across reboots.
-        let mac =
-            esp_hal::efuse::interface_mac_address(esp_hal::efuse::InterfaceMacAddress::Bluetooth);
-        let mut id = [0u8; 6];
-        id.copy_from_slice(mac.as_bytes());
+        let mac = interface_mac_address(InterfaceMacAddress::Bluetooth);
+        let id = mac
+            .as_bytes()
+            .try_into()
+            .expect("a MAC address has 6 bytes");
         nxcontroller_core::ble::run(connector, id, settings).await
     }
 }
