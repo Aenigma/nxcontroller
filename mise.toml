@@ -1,0 +1,167 @@
+# Tools and tasks for the whole project. `mise install` once, then `mise tasks`
+# lists everything; `mise run <task>` runs one. Tasks that need real code are
+# Python file tasks in .mise/tasks/ (flash, web:esp32s3).
+# Rust isn't here: rustup reads the rust-toolchain.toml files (the ESP32-S3's
+# Xtensa toolchain comes from espup; `mise run setup` installs it).
+
+[tools]
+node = "24"
+pnpm = "12.15.0"  # also "packageManager" in web/package.json
+uv = "latest"
+
+# Prebuilt binaries from the projects' GitHub releases, for this machine's OS and CPU.
+
+[tools."github:esp-rs/espup"]  # installs the ESP32-S3's Xtensa Rust toolchain
+version = "0.17.1"
+asset_pattern = 'espup-{{ arch(x64="x86_64", arm64="aarch64") }}-{{ os(macos="apple-darwin", linux="unknown-linux-gnu", windows="pc-windows-msvc") }}.zip'
+
+[tools."github:esp-rs/espflash"]  # flashes the ESP32-S3 and makes its images
+version = "4.6.0"
+asset_pattern = 'espflash-{{ arch(x64="x86_64", arm64="aarch64") }}-{{ os(macos="apple-darwin", linux="unknown-linux-gnu", windows="pc-windows-msvc") }}.zip'
+
+[tools."github:raspberrypi/pico-sdk-tools"]  # picotool: turns the Pico firmware into .uf2 files
+version = "2.3.1-0"
+bin_path = "picotool"  # the archive keeps picotool next to the USB library it uses
+platforms.macos-arm64 = { asset_pattern = "picotool-*-mac.zip" }  # one build for both Mac CPUs
+platforms.macos-x64 = { asset_pattern = "picotool-*-mac.zip" }
+platforms.linux-x64 = { asset_pattern = "picotool-*-x86_64-lin.tar.gz" }
+platforms.linux-arm64 = { asset_pattern = "picotool-*-aarch64-lin.tar.gz" }
+platforms.windows-x64 = { asset_pattern = "picotool-*-x64-win.zip" }
+
+# The tasks' commands are written for a POSIX shell. On Windows, have mise run
+# them with Git Bash instead of cmd.exe (mise only takes this from your own config):
+#   mise settings set windows_default_inline_shell_args "bash -c"
+
+# --- One-time setup -------------------------------------------------------------
+
+[tasks.setup]
+description = "One-time: the ESP32-S3's Xtensa toolchain, the Python env, and firmware/.env"
+depends = ["setup:esp32s3"]
+run = [
+  "test -f firmware/.env || cp firmware/.env.example firmware/.env",
+  "cd python && uv sync",
+]
+
+[tasks."setup:esp32s3"]
+description = "Install the ESP32-S3's Xtensa Rust toolchain with espup, unless it's there"
+run = "rustup toolchain list | grep -q '^esp' || espup install --targets esp32s3 --toolchain-version 1.97.0.0 --export-file ~/export-esp.sh"
+
+# --- Tests and lint -------------------------------------------------------------
+
+[tasks.test]
+description = "Python and web tests, then lint every crate"
+depends = ["test:python", "test:web", "lint"]
+
+[tasks."test:python"]
+description = "Python package tests, against the mock device"
+dir = "python"
+run = "uv run pytest -q"
+
+[tasks."test:web"]
+description = "Web page typecheck and tests"
+dir = "web"
+run = ["pnpm install --frozen-lockfile", "pnpm typecheck", "pnpm test"]
+
+[tasks.lint]
+description = "Clippy on every crate, warnings as errors"
+depends = ["lint:core", "lint:pico", "lint:esp32s3"]
+
+[tasks."lint:core"]
+description = "Clippy on the shared core, alone (as a board's dependency it isn't linted)"
+dir = "firmware/core"
+run = [
+  "cargo clippy --release --features ble --target thumbv6m-none-eabi -- -D warnings",
+  "cargo clippy --release --features wifi --target thumbv6m-none-eabi -- -D warnings",
+  "cargo clippy --release --features ble,wifi --target thumbv6m-none-eabi -- -D warnings",
+]
+
+[tasks."lint:pico"]
+description = "Clippy on the Pico W and Pico 2 W firmware"
+dir = "firmware/pico"
+run = [
+  "cargo clippy --release --features rp2040 --target thumbv6m-none-eabi -- -D warnings",
+  "cargo clippy --release --features rp2350 --target thumbv8m.main-none-eabihf -- -D warnings",
+]
+
+[tasks."lint:esp32s3"]
+description = "Clippy on the ESP32-S3 firmware: BLE + WiFi, BLE only, WiFi only"
+dir = "firmware/esp32s3"
+env = { _.source = "{{env.HOME}}/export-esp.sh", WIFI_SSID = "ci", WIFI_PASSWORD = "ci" }
+run = [
+  "cargo clippy --release -- -D warnings",
+  "cargo clippy --release --no-default-features --features ble -- -D warnings",
+  "cargo clippy --release --no-default-features --features wifi -- -D warnings",
+]
+
+# --- Your boards ----------------------------------------------------------------
+# These read firmware/.env (device name, WiFi). The web page's firmware below
+# never does, so published images carry neither.
+
+[tasks."build:esp32s3"]
+description = "Build the ESP32-S3 firmware (BLE + WiFi; extra arguments go to cargo)"
+dir = "firmware/esp32s3"
+env = { _.file = "{{config_root}}/firmware/.env", _.source = "{{env.HOME}}/export-esp.sh" }
+run = "cargo build --release"
+
+[tasks.monitor]
+description = "Show the ESP32-S3's serial log (pick its UART port; resets the board)"
+run = "espflash monitor --chip esp32s3 --no-stub --elf firmware/esp32s3/target/xtensa-esp32s3-none-elf/release/nxcontroller-firmware"
+
+# flash is a file task in .mise/tasks/.
+
+[tasks."build:pico"]
+description = "Build the Pico W and Pico 2 W firmware as .uf2 files, into firmware/pico/dist/"
+depends = ["build:pico:rp2040", "build:pico:rp2350"]
+
+[tasks."build:pico:rp2040"]
+description = "Build the Pico W firmware: firmware/pico/dist/nxcontroller-pico-w.uf2"
+env = { _.file = "{{config_root}}/firmware/.env" }
+run = [
+  "cd firmware/pico && cargo build --release --features rp2040 --target thumbv6m-none-eabi",
+  "mkdir -p firmware/pico/dist",
+  "picotool uf2 convert -t elf firmware/target/thumbv6m-none-eabi/release/nxcontroller-pico firmware/pico/dist/nxcontroller-pico-w.uf2 --family rp2040",
+]
+
+[tasks."build:pico:rp2350"]
+description = "Build the Pico 2 W firmware: firmware/pico/dist/nxcontroller-pico2-w.uf2"
+env = { _.file = "{{config_root}}/firmware/.env" }
+run = [
+  "cd firmware/pico && cargo build --release --features rp2350 --target thumbv8m.main-none-eabihf",
+  "mkdir -p firmware/pico/dist",
+  # --abs-block: works around the RP2350's erratum E10 for boards that already have a partition table.
+  "picotool uf2 convert -t elf firmware/target/thumbv8m.main-none-eabihf/release/nxcontroller-pico firmware/pico/dist/nxcontroller-pico2-w.uf2 --family rp2350-arm-s --abs-block",
+]
+
+[tasks.mock]
+description = "A fake board on 127.0.0.1:7700 for the Python package"
+dir = "python"
+run = "uv run nxc mock-device --port 7700"
+
+# --- The web page (installer + Bluetooth remote) --------------------------------
+# Each part runs on its own in CI; `mise run web` does them all.
+
+[tasks.web]
+description = "Build the page with every board's firmware, into web/dist"
+depends = ["web:esp32s3", "web:pico"]
+run = [{ task = "web:page" }]
+
+[tasks."web:serve"]
+description = "Build the page, then serve it on http://localhost:8700"
+depends = ["web"]
+dir = "web"
+run = "pnpm exec vite preview --host 127.0.0.1 --port 8700 --strictPort"
+
+# web:esp32s3 is a file task in .mise/tasks/web/.
+
+[tasks."web:pico"]
+description = "Pico .uf2 files (without your device name), into web/public/firmware/"
+run = [
+  { task = "build:pico:rp2040", env = { NXC_NAME = "" } },
+  { task = "build:pico:rp2350", env = { NXC_NAME = "" } },
+  "mkdir -p web/public/firmware && cp firmware/pico/dist/*.uf2 web/public/firmware/",
+]
+
+[tasks."web:page"]
+description = "The page around whatever firmware is in web/public/, into web/dist"
+dir = "web"
+run = ["pnpm install --frozen-lockfile", "pnpm build"]

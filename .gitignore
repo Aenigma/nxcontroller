@@ -4,7 +4,7 @@ firmware/target/
 firmware/esp32s3/target/
 firmware/pico/dist/
 firmware/.env
-# web page: firmware images and manifest written by scripts/web.sh, plus Vite output
+# web page: firmware images and manifest written by `mise run web:*`, plus Vite output
 web/public/firmware/
 web/public/manifest.json
 web/node_modules/

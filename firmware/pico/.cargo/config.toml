@@ -1,4 +1,4 @@
-# No default target: the chip feature decides it (see Cargo.toml / scripts/pico.sh).
+# No default target: the chip feature decides it (see Cargo.toml / build:pico in mise.toml).
 [target.'cfg(all(target_arch = "arm", target_os = "none"))']
 # `cargo run` with the Pico in BOOTSEL mode (needs picotool).
 runner = "picotool load -u -v -x -t elf"

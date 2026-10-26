@@ -14,9 +14,9 @@ web page over Bluetooth, or (ESP32-S3) from a Python library over WiFi.
 **Start here:** open the project's GitHub Pages site in Chrome or Edge. It
 installs the firmware and then works as the remote: gamepad, typing text files,
 mode and WiFi settings, and the board's log. To build and run that page locally
-with the firmware, use `make web` (http://localhost:8700). To work on the page
-itself, `cd web && pnpm install && pnpm dev` (no firmware needed; the page still
-connects to a board over Bluetooth).
+with the firmware, use `mise run web:serve` (http://localhost:8700). To work on
+the page itself, `cd web && pnpm install && pnpm dev` (no firmware needed; the
+page still connects to a board over Bluetooth).
 
 ## Layout
 
@@ -26,9 +26,10 @@ connects to a board over Bluetooth).
 | `firmware/esp32s3/` | ESP32-S3 board (esp-hal, esp-radio)            | Xtensa Rust via `espup`       |
 | `firmware/pico/` | Pico W (RP2040) and Pico 2 W (RP2350) board, Bluetooth only (embassy-rp, cyw43) | stable Rust |
 | `python/`   | `nxcontroller` package and `nxc` CLI                  | Python ≥3.10, `uv`            |
-| `web/`      | The single page: installer (ESP Web Tools) + remote (Web Bluetooth). Preact + Vite + TypeScript | Node + `pnpm` (`scripts/web.sh` builds it) |
+| `web/`      | The single page: installer (ESP Web Tools) + remote (Web Bluetooth). Preact + Vite + TypeScript | Node + `pnpm` (`mise run web` builds it) |
 | `protocol/` | `PROTOCOL.md`, the wire contract between them         | –                             |
-| `scripts/`  | setup / build / flash / monitor / test / lint, `pico.sh`, `web.sh` | bash             |
+| `mise.toml` | Every task (`mise tasks` lists them) and the tools: Node, pnpm, uv, espup, espflash, picotool | [mise](https://mise.jdx.dev) |
+| `.mise/tasks/` | The two tasks that need real code: `flash.py` (download mode, ports) and `web/esp32s3.py` (installer images) | uv scripts (uv picks the Python) |
 
 `firmware/` and `python/` share no code and no build system. Each builds,
 versions and ships on its own. They are coupled only through
@@ -39,12 +40,14 @@ versions and ships on its own. They are coupled only through
 
 **No toolchain:** use the web page (above).
 
-**From source:**
+**From source** (needs [mise](https://mise.jdx.dev) and [rustup](https://rustup.rs); on
+Windows also Git for Windows, with `mise settings set windows_default_inline_shell_args "bash -c"`
+so the tasks run in Git Bash):
 
 ```bash
-scripts/setup.sh                 # one-time: espup + Xtensa toolchain, espflash, python env
+mise run setup                   # one-time: Xtensa toolchain (via espup), Python env, firmware/.env
 $EDITOR firmware/.env            # optional WIFI_SSID / WIFI_PASSWORD, NXC_NAME
-scripts/flash.sh                 # build + flash + serial monitor
+mise run flash                   # ESP32-S3: build + flash + serial monitor
 ```
 
 The serial log prints the device IP once WiFi is up. Then:
@@ -57,12 +60,16 @@ uv run nxc tap A
 uv run nxc type "hello"
 ```
 
-`make setup|build|flash|monitor|pico|test|mock|web` wraps the same scripts.
+mise installs the tools pinned in `mise.toml` the first time a task needs them.
+`mise tasks` lists the rest: `test`, `lint`, `build:esp32s3`, `build:pico`,
+`monitor`, `mock`, `web`, `web:serve`, ... Extra arguments go through after `--`,
+e.g. `mise run flash -- --no-monitor`.
 
 ### Raspberry Pi Pico W / Pico 2 W
 
 ```bash
-scripts/pico.sh                  # both boards -> firmware/pico/dist/*.uf2 (stable Rust only)
+mise run build:pico              # both boards -> firmware/pico/dist/*.uf2 (no Xtensa toolchain needed)
+mise run build:pico:rp2350       # just one (rp2040: Pico W, rp2350: Pico 2 W)
 ```
 
 Hold **BOOTSEL** while plugging the Pico in, then copy the `.uf2` for your board
@@ -83,7 +90,7 @@ computer while developing:
 
 - **USB** (native, GPIO19/20): flashing goes through this port, with the chip's ROM in
   download mode. While the firmware runs, this port is the gamepad/keyboard, so
-  `scripts/flash.sh` asks you to **hold BOOT, tap RST, release BOOT** before it
+  `mise run flash` asks you to **hold BOOT, tap RST, release BOOT** before it
   flashes.
 - **UART** (CH343/CP210x bridge): carries the log. After flashing, the script resets the board
   through this port and opens the monitor. Flashing *through* the UART port fails on
@@ -118,31 +125,30 @@ so a crashed script can't leave a button held down.
 ### Developing without hardware
 
 ```bash
-make mock                                   # fake device on 127.0.0.1:7700 (add --keyboard-only / --gamepad-only via nxc mock-device)
+mise run mock                               # fake device on 127.0.0.1:7700 (--keyboard-only / --gamepad-only: uv run nxc mock-device)
 cd python && uv run nxc --host 127.0.0.1 ping
 ```
 
-`scripts/test.sh` runs the Python tests against the mock, then `scripts/lint.sh` (clippy on the core and every board; `scripts/lint.sh core pico` needs only stable Rust).
+`mise run test` runs the Python and web tests and `mise run lint` (clippy on the core and every board) in parallel. `mise run lint:core` and `lint:pico` need no Xtensa toolchain.
 
 ## Firmware notes
 
 - **WiFi credentials** come from, in order: those saved on the board, then any
-  compiled in from `firmware/.env` (gitignored; build through the scripts), then
+  compiled in from `firmware/.env` (gitignored; build through mise), then
   none. With none, or after 3 failed connection attempts, the board opens the open
   `nxcontroller-setup` hotspot with a setup page at `http://192.168.4.1`. It keeps
   retrying its network in the meantime, so a slow router still gets picked up.
   Move it to another network with `uv run nxc wifi "SSID" "password"`.
   The hotspot is open, so anyone nearby can configure the board while it's up.
-- **Web page** (`scripts/web.sh`, project in `web/`): for the ESP32-S3, ESP Web Tools with the
+- **Web page** (`mise run web`, project in `web/`): for the ESP32-S3, ESP Web Tools with the
   bootloader, partition table and app shipped as separate parts, so updating
   doesn't wipe saved WiFi or mode unless you tick "erase"; for the Picos, a `.uf2`
   download with BOOTSEL instructions. It always builds the Bluetooth-only firmware,
-  ignoring your `.env`. The script writes the images and
-  `manifest.json` into `web/public/` (gitignored), then runs `pnpm install
-  --frozen-lockfile` and `pnpm build` to produce `web/dist`, which is what gets
-  hosted. In `web/`: `pnpm dev` (live reload; the install button needs the images in
-  `public/`), `pnpm typecheck`, `pnpm test`. CI (`.github/workflows/build.yml`) builds it on every push,
-  deploys it to GitHub Pages from the default branch, and attaches the firmware
+  ignoring your `.env`. `web:esp32s3` and `web:pico` write the
+  images, `.uf2` files and `manifest.json` into `web/public/` (gitignored), then
+  `web:page` runs `pnpm build` to produce `web/dist`, which is what gets hosted. In `web/`: `pnpm dev` (live reload; the install button needs the images in
+  `public/`), `pnpm typecheck`, `pnpm test`. CI (`.github/workflows/build.yml`) runs the same tasks on every
+  push (lint, and each board's firmware in a job of its own), deploys the page to GitHub Pages from the default branch, and attaches the firmware
   (ESP32-S3 parts plus one merged image for offset 0x0, and both `.uf2` files) to
   releases for `v*` tags.
 - **Transports are Cargo features:** `ble` (the web page), `wifi` (the Python
@@ -179,4 +185,6 @@ cd python && uv run nxc --host 127.0.0.1 ping
 - WiFi power saving is disabled for latency.
 - Log level: set `NXC_LOG` (or `ESP_LOG`) when building, e.g. `NXC_LOG=debug`, or `info,nxcontroller_core::usb=debug`.
 - Toolchains: `firmware/esp32s3/rust-toolchain.toml` pins the `esp` channel (run
-  `espup update` to upgrade it); `firmware/pico/rust-toolchain.toml` uses stable.
+  `espup update` to upgrade it); `firmware/rust-toolchain.toml` pins the stable
+  Rust used by the core and the Picos. Node, pnpm, uv, espup, espflash and
+  picotool are pinned in `mise.toml` (the last three from their GitHub releases).

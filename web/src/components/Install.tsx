@@ -2,7 +2,7 @@ import { useEffect, useState } from "preact/hooks";
 import { load, save } from "../storage";
 
 /** Boards the page has firmware for. The remote works the same with each.
- *  `uf2` names match PICO_CHIPS in scripts/_env.sh, which writes them to firmware/. */
+ *  `uf2` names match the build:pico tasks in mise.toml. */
 export const BOARDS = [
   { id: "esp32s3", label: "ESP32-S3" },
   { id: "pico2w", label: "Raspberry Pi Pico 2 W", uf2: "nxcontroller-pico2-w.uf2", drive: "RP2350" },

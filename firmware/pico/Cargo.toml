@@ -5,7 +5,7 @@ edition      = "2024"
 rust-version = "1.88"
 description  = "nxcontroller on the Raspberry Pi Pico W (RP2040) and Pico 2 W (RP2350)"
 
-# Build with exactly one chip feature and its target (scripts/pico.sh does this):
+# Build with exactly one chip feature and its target (`mise run build:pico` does this):
 #   --features rp2040 --target thumbv6m-none-eabi          Pico W
 #   --features rp2350 --target thumbv8m.main-none-eabihf   Pico 2 W
 # Bluetooth only, like the web page's ESP32-S3 firmware.

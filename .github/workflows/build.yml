@@ -20,113 +20,119 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Xtensa Rust toolchain installed by espup (rust-toolchain.toml selects "esp").
-  ESP_RUST_VERSION: "1.97.0.0"
+  # mise runs this repository's tasks without asking to trust mise.toml.
+  MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
   ELF: firmware/esp32s3/target/xtensa-esp32s3-none-elf/release/nxcontroller-firmware
 
 jobs:
+  # Every job runs the same mise tasks as you do locally (`mise tasks` lists them);
+  # mise-action installs the tools pinned in mise.toml.
+
   python:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.3.2  # this action publishes no moving major tag
-      - name: Test
-        working-directory: python
-        run: uv run pytest -q
+      - uses: jdx/mise-action@v5
+      - run: mise run test:python
 
   web:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v6
-        with:
-          package_json_file: web/package.json
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          cache: pnpm
-          cache-dependency-path: web/pnpm-lock.yaml
-      - name: Typecheck and test
-        working-directory: web
-        run: |
-          pnpm install --frozen-lockfile
-          pnpm typecheck
-          pnpm test
+      - uses: jdx/mise-action@v5
+      - run: mise run test:web
 
-  # The shared core and the Pico boards: stable Rust only (firmware/rust-toolchain.toml
-  # adds the Arm targets), so this runs alongside the ESP32-S3 toolchain install.
-  pico:
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: firmware
-      - name: Lint the core and the Pico firmware
-        run: scripts/lint.sh core pico
-
-  firmware:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install espup and espflash
-        uses: taiki-e/install-action@v2
-        with:
-          tool: espup,espflash
-
-      - name: Install the Xtensa Rust toolchain
+      - uses: jdx/mise-action@v5
+      - run: mise run setup:esp32s3
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: espup install --targets esp32s3 --toolchain-version "$ESP_RUST_VERSION" --export-file "$HOME/export-esp.sh"
-
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # espup downloads from GitHub
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
             firmware/esp32s3
             firmware
+      - run: mise run lint
 
-      - name: Lint the ESP32-S3 firmware (ble + wifi, ble only, wifi only)
-        run: |
-          . "$HOME/export-esp.sh"
-          scripts/lint.sh esp32s3
+  # Each firmware the page offers builds in a job of its own (Bluetooth only).
 
-      # pnpm's version comes from "packageManager" in web/package.json.
-      - uses: pnpm/action-setup@v6
+  build-esp32s3:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v5
+      - run: mise run setup:esp32s3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # espup downloads from GitHub
+      - uses: Swatinem/rust-cache@v2
         with:
-          package_json_file: web/package.json
-
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          cache: pnpm
-          cache-dependency-path: web/pnpm-lock.yaml
-
-      - name: Build the web page and its firmware (all boards, Bluetooth only)
+          workspaces: firmware/esp32s3
+      - run: mise run web:esp32s3
+      - name: Merged image for releases (one file for any flasher, at offset 0x0)
         run: |
-          . "$HOME/export-esp.sh"
-          scripts/web.sh
+          mkdir -p release
+          espflash save-image --chip esp32s3 --merge "$ELF" release/nxcontroller-esp32s3-merged.bin
+      - uses: actions/upload-artifact@v7
+        with:
+          name: esp32s3
+          path: |
+            web/public/manifest.json
+            web/public/firmware/
+            release/
 
-      - name: Collect firmware images
+  build-pico:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        chip: [rp2040, rp2350]  # Pico W, Pico 2 W
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v5
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: firmware
+          key: ${{ matrix.chip }}
+      - run: mise run build:pico:${{ matrix.chip }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pico-${{ matrix.chip }}
+          path: firmware/pico/dist/*.uf2
+
+  # The page around every board's firmware; also the set of files for releases.
+  site:
+    needs: [build-esp32s3, build-pico]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v5
+      - uses: actions/download-artifact@v8
+        with:
+          name: esp32s3
+          path: .
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: pico-*
+          merge-multiple: true
+          path: web/public/firmware/
+      - run: mise run web:page
+      - name: Collect the firmware for releases
         run: |
           mkdir -p dist
-          cp web/public/firmware/bootloader.bin web/public/firmware/partitions.bin web/public/firmware/app.bin dist/
-          cp web/public/firmware/*.uf2 dist/
-          # One image for any flasher: write it at offset 0x0.
-          espflash save-image --chip esp32s3 --merge "$ELF" dist/nxcontroller-esp32s3-merged.bin
-
+          cp web/public/firmware/* release/* dist/
       - uses: actions/upload-artifact@v7
         with:
           name: firmware
           path: dist/
-
       - uses: actions/upload-pages-artifact@v5
         with:
           path: web/dist/
 
   pages:
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
-    needs: [python, web, pico, firmware]
+    needs: [python, web, lint, site]
     runs-on: ubuntu-latest
     permissions:
       pages: write
@@ -140,7 +146,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [python, web, pico, firmware]
+    needs: [python, web, lint, site]
     runs-on: ubuntu-latest
     permissions:
       contents: write
