@@ -1,3 +1,6 @@
+# The core and the Pico boards. Pinned, so a new Rust release can't change what
+# clippy accepts between one CI run and the next. Bump it on purpose.
 [toolchain]
-channel = "stable"
-targets = ["thumbv6m-none-eabi", "thumbv8m.main-none-eabihf"]
+channel    = "1.99.0"
+components = ["clippy", "rustfmt"]
+targets    = ["thumbv6m-none-eabi", "thumbv8m.main-none-eabihf"]

@@ -180,10 +180,10 @@ pub fn queue_taps(flags: u8, press_ms: u8, release_ms: u8, keys: &[u8]) -> bool 
     if KEYBOARD_CMDS.free_capacity() < keys.len() / 2 {
         return false;
     }
-    for pair in keys.chunks_exact(2) {
+    for &[modifiers, key] in keys.as_chunks::<2>().0 {
         let _ = KEYBOARD_CMDS.try_send(KeyCmd::Tap {
-            modifiers: pair[0],
-            key: pair[1],
+            modifiers,
+            key,
             press_ms,
             release_ms,
             rollover,
